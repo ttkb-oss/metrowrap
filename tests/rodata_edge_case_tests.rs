@@ -242,6 +242,58 @@ fn test_undefined_symbol_relocation() {
     // Symbol 0 is typically the undefined symbol
 }
 
+#[test]
+fn test_only_rodata() {
+    let preprocessor = create_test_preprocessor();
+    let compiler = create_test_compiler();
+    let assembler = create_test_assembler();
+
+    let file = "tests/data/only_rodata.c";
+    let c_path = PathBuf::from(file);
+
+    let c_content = NamedString {
+        source: SourceType::Path(c_path.display().to_string()),
+        content: std::fs::read_to_string(&c_path).unwrap(),
+        encoding: UTF_8,
+        src_dir: PathBuf::from("tests/data"),
+    };
+
+    let output_path = PathBuf::from("target/.private/tests/edge/only_rodata.o");
+    let result = metrowrap::process_c_file(
+        &c_content,
+        &output_path,
+        &preprocessor,
+        &compiler,
+        &assembler,
+    );
+
+    assert!(
+        result.is_ok(),
+        "Failed on file {}: {:?}",
+        file,
+        result.err()
+    );
+
+    let obj_bytes = std::fs::read(&output_path).unwrap();
+    let elf = Elf::from_bytes(&obj_bytes);
+
+    let rodata_count = elf.sections.iter().filter(|s| s.name == ".rodata").count();
+    assert_eq!(
+        rodata_count, 1,
+        "File {} should have {} rodata sections, got {}",
+        file, 1, rodata_count
+    );
+
+    let rodata = elf
+        .sections
+        .iter()
+        .filter(|s| s.name == ".rodata")
+        .next()
+        .unwrap();
+    let only_rodata = str::from_utf8(&rodata.data).unwrap();
+    assert_eq!(only_rodata, "This is only rodata, no code\0");
+}
+
 /// Test: Multiple files processed sequentially
 #[test]
 fn test_sequential_file_processing() {

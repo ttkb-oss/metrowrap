@@ -146,12 +146,7 @@ pub fn process_c_file(
         .collect();
 
     let asm_objects: Vec<(&PathBuf, usize, Vec<u8>)> = asm_files
-        .iter()
-        .filter(|(asm_file, _)| {
-            let stub = asm_file.file_stem().unwrap().display().to_string();
-            stub_functions.contains(&stub)
-        })
-        .par_bridge()
+        .par_iter()
         .map(|(asm_file, num_rodata_symbols)| {
             let assembled_bytes = assembler.assemble_file(asm_file).expect("assembled bytes");
             (asm_file, *num_rodata_symbols, assembled_bytes)
@@ -167,6 +162,12 @@ pub fn process_c_file(
         assert_eq!(1, asm_functions.len());
 
         let asm_text = &asm_functions[0].section.data;
+
+        // if this is a function and that function is not an INCLUDE_ASM, ignore
+        let asm_main_symbol = asm_file.file_stem().unwrap().display().to_string();
+        if !asm_text.is_empty() && !stub_functions.contains(&asm_main_symbol) {
+            continue;
+        }
 
         let mut rodata_section_indices: Vec<usize> = vec![];
         let mut text_section_index: usize = 0xFFFFFFFF;
