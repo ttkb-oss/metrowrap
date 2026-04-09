@@ -1,7 +1,12 @@
 use metrowrap::compiler;
+use metrowrap::workspace::{TempMode, Workspace};
 use std::path::Path;
 
 use object::{self, Object, ObjectSection, SectionKind};
+
+fn workspace() -> Workspace {
+    Workspace::new(TempMode::Normal).expect("workspace")
+}
 
 #[test]
 fn test_compiler() {
@@ -27,7 +32,11 @@ fn test_compiler() {
     );
 
     let obj = compiler
-        .compile_file(Path::new("tests/data/compiler.c"), "tests/data/compiler.c")
+        .compile_file(
+            Path::new("tests/data/compiler.c"),
+            "tests/data/compiler.c",
+            workspace().path(),
+        )
         .expect("obj");
 
     assert!(obj.0.len() > 0);
@@ -48,6 +57,7 @@ fn test_compiler_only_asm() {
         .compile_file(
             Path::new("tests/data/assembler.c"),
             "tests/data/assembler.c",
+            workspace().path(),
         )
         .expect("obj");
 

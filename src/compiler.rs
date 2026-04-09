@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 
-use tempfile::tempdir;
-
 pub struct Compiler {
     pub c_flags: Vec<String>,
     pub mwcc_path: PathBuf,
@@ -46,9 +44,9 @@ impl Compiler {
         &self,
         c_file: P,
         display_name: impl AsRef<str> + ToString,
+        workspace: &Path,
     ) -> Result<(Vec<u8>, Option<MakeRule>), MWError> {
-        let temp_dir = tempdir()?;
-        let o_file = temp_dir.path().join("result.o");
+        let o_file = workspace.join("result.o");
 
         let mut cmd_args = vec!["-c".to_string()];
         cmd_args.extend(self.c_flags.clone());
@@ -125,7 +123,7 @@ impl Compiler {
         }
 
         let obj_bytes = std::fs::read(&o_file)?;
-        let make_rule = self.handle_dependency_file(c_file, temp_dir.path())?;
+        let make_rule = self.handle_dependency_file(c_file, workspace)?;
 
         Ok((obj_bytes, make_rule))
     }

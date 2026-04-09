@@ -7,15 +7,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use encoding_rs::Encoding;
-use encoding_rs::UTF_8;
-use encoding_rs_io::DecodeReaderBytesBuilder;
 
-use metrowrap::NamedString;
+use metrowrap::NamedSource;
 use metrowrap::SourceType;
 use metrowrap::assembler;
 use metrowrap::compiler;
 use metrowrap::preprocessor;
+use metrowrap::workspace::{TempMode, Workspace};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "MWCC bridge for assembly injection")]
@@ -41,8 +39,6 @@ struct Args {
     #[arg(help = "Output object file", short)]
     output: PathBuf,
 
-    // #[arg(help = "Input C file", required = false, default_value = "-")]
-    // c_file: PathBuf,
     #[arg(long, default_value = "mwccpsp.exe")]
     mwcc_path: PathBuf,
 
@@ -67,11 +63,29 @@ struct Args {
     #[arg(long)]
     macro_inc_path: Option<PathBuf>,
 
-    #[arg(long)]
+    #[arg(long, hide = true)]
     src_dir: Option<PathBuf>,
 
-    #[arg(long)]
+    #[arg(long, hide = true)]
     target_encoding: Option<String>,
+
+    /// Keep temp files on failure for debugging.
+    ///
+    /// Without a value: writes files to the system temp dir and leaves them
+    /// in place when the build fails so you can inspect them.
+    ///
+    /// With `=shm`: uses /dev/shm if available (falling back to system temp).
+    /// Files are always cleaned up at process exit - nothing is left orphaned
+    /// in /dev/shm - but they survive long enough for you to inspect them
+    /// before the process terminates.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "tmp",
+        value_name = "shm"
+    )]
+    debug_keep_temp_files_on_failure: Option<String>,
 
     /// This catches everything else: unknown flags AND the file path.
     /// trailing_var_arg means everything after the first "unknown"
@@ -83,11 +97,12 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = Args::parse();
 
-    let encoding = if let Some(target_encoding) = args.target_encoding {
-        Encoding::for_label(target_encoding.as_bytes()).expect("encoding")
-    } else {
-        UTF_8
-    };
+    if let Some(encoding) = args.target_encoding {
+        eprintln!(
+            "--target-encoding is no longer supported, use `iconv --from-code=UTF-8 --to-code={encoding}` instead"
+        );
+        std::process::exit(1);
+    }
 
     let Some(possible_infile) = args.rest.last() else {
         eprintln!("missing input file");
@@ -103,7 +118,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     args.rest.pop();
 
-    // TODO: cflags vec!["-Itests/data".to_string()], // Flags would be parsed from extra args
+    let temp_mode = match args.debug_keep_temp_files_on_failure.as_deref() {
+        None => TempMode::Normal,
+        Some("shm") => TempMode::ShmDebug,
+        Some(_) => TempMode::KeepOnFailure,
+    };
+
+    let workspace = Workspace::new(temp_mode)?;
+
+    if args.src_dir.is_some() {
+        eprintln!(
+            "warning: --src-dir is deprecated and will be removed in a future version. use -I instead."
+        );
+    }
+
     let compiler =
         compiler::Compiler::new(args.rest, args.mwcc_path, args.use_wibo, args.wibo_path);
 
@@ -119,31 +147,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         asm_dir_prefix: args.asm_dir,
     });
 
-    // In GCC, the file is usually the last positional argument.
-
     let c_reader = if infile == "-" {
-        let mut reader = DecodeReaderBytesBuilder::new()
-            // .encoding(Some(encoding))
-            .build(io::stdin().lock());
-        let mut content = String::new();
-        reader.read_to_string(&mut content)?;
-        NamedString {
+        let mut content = Vec::new();
+        io::stdin().lock().read_to_end(&mut content)?;
+        NamedSource {
             source: SourceType::StdIn,
             content,
-            encoding,
             src_dir: args.src_dir.unwrap_or(PathBuf::from(".")),
         }
     } else {
-        let mut reader = DecodeReaderBytesBuilder::new()
-            // .encoding(Some(encoding))
-            .bom_sniffing(true)
-            .build(File::open(&infile)?);
-        let mut content = String::new();
-        reader.read_to_string(&mut content)?;
-        NamedString {
+        let mut content = Vec::new();
+        File::open(&infile)?.read_to_end(&mut content)?;
+        NamedSource {
             source: SourceType::Path(infile.clone()),
             content,
-            encoding,
             src_dir: PathBuf::from(infile)
                 .parent()
                 .unwrap_or(&PathBuf::from("."))
@@ -157,8 +174,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace,
     ) {
         eprintln!("failed to process c file: {:?}", e);
+        workspace.on_failure();
         std::process::exit(1);
     }
 

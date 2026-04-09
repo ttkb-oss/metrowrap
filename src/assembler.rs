@@ -5,7 +5,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use tempfile::NamedTempFile;
+
+use tempfile::Builder;
 
 pub struct Assembler {
     pub as_path: String,
@@ -16,12 +17,20 @@ pub struct Assembler {
 }
 
 impl Assembler {
-    pub fn assemble_file<P: AsRef<Path>>(&self, asm_filepath: P) -> Result<Vec<u8>, MWError> {
-        self.assemble_data(File::open(asm_filepath)?)
+    pub fn assemble_file<P: AsRef<Path>>(
+        &self,
+        asm_filepath: P,
+        workspace: &Path,
+    ) -> Result<Vec<u8>, MWError> {
+        self.assemble_data(File::open(asm_filepath)?, workspace)
     }
 
-    pub fn assemble_data<R: Read>(&self, mut asm_data: R) -> Result<Vec<u8>, MWError> {
-        let temp_o = NamedTempFile::new()?;
+    pub fn assemble_data<R: Read>(
+        &self,
+        mut asm_data: R,
+        workspace: &Path,
+    ) -> Result<Vec<u8>, MWError> {
+        let temp_o = Builder::new().suffix(".o").tempfile_in(workspace)?;
 
         let mut cmd = Command::new(&self.as_path);
         cmd.args([
@@ -33,11 +42,13 @@ impl Assembler {
         .arg(temp_o.path().to_str().unwrap())
         .args(&self.as_flags);
 
-        if let Some(inc) = &self.macro_inc_path {
-            if let Some(parent) = inc.parent() {
-                cmd.arg(format!("-I{}", parent.display()));
-            }
+        if let Some(inc) = &self.macro_inc_path
+            && let Some(parent) = inc.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            cmd.arg(format!("-I{}", parent.display()));
         }
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

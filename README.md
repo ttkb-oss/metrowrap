@@ -1,4 +1,4 @@
-# <div width="128"><img align="center" src="docs/MetroWrap@0.5x.png" alt="MetroWrap" height="128"><br/>MetroWrap</center></div>
+# <div width="128"><center><img align="center" src="docs/MetroWrap@0.5x.png" alt="MetroWrap" height="128"><br/>MetroWrap</center></div>
 
 [![CI](https://github.com/ttkb-oss/metrowrap/actions/workflows/ci.yml/badge.svg)](https://github.com/ttkb-oss/metrowrap/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/ttkb-oss/metrowrap/branch/main/graph/badge.svg)](https://codecov.io/gh/ttkb-oss/metrowrap)
@@ -14,7 +14,7 @@ performance and build system integration.
 
 ## Background
 
-Decompilation projects targeting platforms like the PSP use Metrowerks CodeWarrior
+Decompilation projects targeting platforms like the PSP might use Metrowerks' CodeWarrior
 compilers (`mwcc`) to match original build output. These projects frequently mix C
 source with disassembled code segments and data via `INCLUDE_ASM` and `INCLUDE_RODATA`
 macros to "inline" assembly, which `mwcc` cannot handle on its own.
@@ -27,7 +27,7 @@ compiler feature support.
 
 ## Why MetroWrap?
 
-Two things were missing from `mwccgap` when working on large projects:
+MetroWrap improves on `mwccgap` in several ways, especially when working on large projects:
 
 **Dependency file support.** Without accurate `.d` files, build systems like Make and
 Ninja cannot determine which object files need recompilation when a header changes.
@@ -40,7 +40,7 @@ the Python equivalent. Around 80% of that improvement comes from the language it
 another 10-20% comes from additional optimizations when producing output that combines
 C and assembly files. Half as many calls to `mwcc` are required when `INCLUDE_ASM` or
 `INCLUDE_RODATA` macros are present and assembly files are assembled in parallel. For
-projects with hundres or thousands of files this adds up.
+projects with hundreds or thousands of files this adds up.
 
 On `sotn-decomp`, `mwccgap` took around 19s to build all PSP files (approximately 25%
 of the game). MetroWrap does the same around 10s.
@@ -50,6 +50,14 @@ paths and refers to temp files by their generated names. MetroWrap filters its o
 show POSIX paths pointing back to the original source files, so warnings and errors land
 where your editor expects them.
 
+**Encoding agnostic.** `metrowrap` supports C source files in any encoding that is an
+ASCII superset. It doesn't concern itself with the assembly format. It works with
+[`spim`](https://github.com/Decompollaborate/spimdisasm.git), but isn't tied to its
+conventions or macros.
+
+**Tempfile handling.** Temp files are consolidated in a single workspace and will use
+shared memory if available.
+
 ## How It Works
 
 Given a C file that uses `INCLUDE_ASM`:
@@ -58,7 +66,7 @@ Given a C file that uses `INCLUDE_ASM`:
 // src/player.c
 #include "common.h"
 
-INCLUDE_ASM("asm/pspeu/player", Player_Update);
+INCLUDE_ASM("asm/player", Player_Update);
 
 s32 Player_GetHealth(Player *p) {
     return p->health;
@@ -68,7 +76,7 @@ s32 Player_GetHealth(Player *p) {
 MetroWrap:
 
 1. Scans the source for `INCLUDE_ASM` and `INCLUDE_RODATA` macros.
-2. If none are found, compiles the original file directly — no overhead.
+2. If none are found, compiles the original file directly - no overhead.
 3. If macros are present, generates a stub file with nop bodies and compiles that once.
 4. Assembles each referenced `.s` file.
 5. Splices the assembled `.text` and `.rodata` sections into the compiled object in place
@@ -119,8 +127,6 @@ preprocesses the source before compilation.
 | `--as-mabi <abi>` | `32` | Assembler `-mabi` value |
 | `--asm-dir <path>` | *(none)* | Root directory to resolve `INCLUDE_ASM` paths against |
 | `--macro-inc-path <path>` | *(none)* | Assembly macro include file prepended to each `.s` file |
-| `--src-dir <path>` | *(input file directory)* | Directory for temp file placement; required when reading from stdin |
-| `--target-encoding <enc>` | UTF-8 | Re-encode the source file before passing it to MWCC (e.g. `sjis`) |
 
 All other flags (anything starting with `-` that MetroWrap does not recognise, plus
 everything before the input file) are forwarded directly to MWCC.
@@ -156,19 +162,18 @@ mw \
 ### Example — reading from stdin
 
 Some toolchains preprocess source through a separate tool before compilation.
-MetroWrap accepts `-` as the input file and uses `--src-dir` to know where to
-write temp files:
+MetroWrap accepts `-` as the input file:
 
 ```sh
-sotn_str process -p -f src/dialogue.c | mw \
-  -o build/src/dialogue.o \
-  --src-dir src \
-  --mwcc-path bin/mwccpsp.exe \
-  --use-wibo \
-  --asm-dir asm/pspeu \
-  --target-encoding sjis \
-  [compiler flags…] \
-  -
+sotn_str process -p -f src/dialogue.c | \
+  iconv --from-code=UTF-8 --to-code=Shift-JIS | \
+  mw \
+    -o build/src/dialogue.o \
+    --mwcc-path bin/mwccpsp.exe \
+    --use-wibo \
+    --asm-dir asm/pspeu \
+    [compiler flags…] \
+    -
 ```
 
 ### Diagnostic output
@@ -199,8 +204,8 @@ MetroWrap features working together:
   Ninja's `$in` variable names the original `.c` file while the compiler never sees it
   directly.
 - A **custom assembler** (`pspas`) is used in place of the default `mipsel-linux-gnu-as`.
-- The source is **re-encoded to Shift-JIS** (`--target-encoding $encoding`) before being
-  handed to MWCC, which expects that encoding for certain projects.
+- The source is **re-encoded to Shift-JIS** using `iconv(1)` before being passed to
+  MetroWrap, which expects that encoding for certain projects.
 - **GCC-style dependency files** are generated with `-gccdep -MD` and wired into Ninja
   via `depfile`/`deps`, so Ninja automatically tracks header changes and invalidates
   only the objects that need rebuilding.
@@ -211,18 +216,18 @@ nw.rule(
     command=(
         "VERSION=$version"
         " tools/sotn_str/target/release/sotn_str process -p -f $in"
+        " | iconv --from-code=UTF-8 --to-code=$encoding"
         " | mw"
         " -o $out"
-        " --src-dir $src_dir"
         " --mwcc-path bin/mwccpsp.exe"
         " --use-wibo --wibo-path bin/wibo"
         " --as-path tools/pspas/target/release/pspas"
         " --asm-dir asm/pspeu"
-        " --target-encoding $encoding"
         " --macro-inc-path include/macro.inc"
         " -gccdep"
         " -MD"          # -MD includes angle-bracket headers; use -MMD to exclude them
         " -gccinc"
+        " -I$src_dir"
         " -Iinclude -Iinclude/pspsdk"
         f" -D_internal_version_$version -DSOTN_STR {extra_cpp_defs}"
         " -c -lang c -sdatathreshold 0 -char unsigned -fl divbyzerocheck"
@@ -260,25 +265,32 @@ through transparently.
 | `--as-path` | `--as-path` |
 | `--asm-dir-prefix` | `--asm-dir` |
 | `--macro-inc-path` | `--macro-inc-path` |
-| `--src-dir` | `--src-dir` |
-| `--target-encoding` | `--target-encoding` |
+| `--src-dir` | Use the `-I` compiler option |
+| `--target-encoding` | Use `iconv(1)` or similar |
 | *(not supported)* | `-gccdep -MD` / `-MMD` |
+
+`mwccgap`'s `--target-encoding` option is no longer supported and should be done by `iconv`
+or the encoding of the source file. Any ASCII superset should work with MetroWrap.
+
+`mwccgap`'s `--src-dir` is used when compiling source from stdin. MetroWrap uses the
+standard `-I` compiler option instead.
 
 # TODO
 
 * Args were ported directly from `mwccgap` to reduce replacement complexity, but
   don't necessarily follow the conventions used by `gcc` or `clang`. These may change
   in the future to use `-Wa,…`, `-fuse-ld…`, and other style args.
-* The `--target-encoding` option is something that can be done by `iconv` and seems
-  unnecessary in MetroWrap. Again, included for compatibility with `mwccgap`. This
-  would require migrating from string processing to treating input sources as opaque
-  with the exception of lower ASCII.
-* `sotn-decomp` uses a custom `pspas` to convert assembly to a format recocognizable
+* `sotn-decomp` uses a custom `pspas` to convert assembly to a format recognizable
   by `allegrex-as`. Some investigation should be done to determine if that should just
   be built in.
-* the `--src-dir` argument is useful when the input source isn't properly preprocessed
-  to included file diagnostics. It's unclear if `mwcc` can be used in such a way that
-  does support these diagnostics since it does not seem to support piped input.
+
+# Users
+
+[Let me know if you're using Metrowrap!](https://github.com/ttkb-oss/metrowrap/issues/new?title=I%27m%20Using%20Metrowrap%20for%20%3Cproject%3E&body=Project%20URL%3A%20%3Curl%3E%0AProject%20repo%3A%20%3Curl%3E%0A%3Cgeneral%20project%20description%3E&labels=user)
+
+## Projects
+
+* [Castlevania: Symphony of the Night Decompilation](https://github.com/Xeeynamo/sotn-decomp)
 
 ## License
 

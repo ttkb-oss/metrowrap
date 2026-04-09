@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: © 2026 TTKB, LLC
 // SPDX-License-Identifier: BSD-3-CLAUSE
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::max;
 use std::io::{Cursor, Read, Write};
 
@@ -12,6 +12,7 @@ pub mod symtab;
 use crate::constants::DOLLAR_SIGN;
 use crate::constants::SYMBOL_AT;
 use crate::constants::SYMBOL_DOLLAR;
+
 pub use crate::elf::section::Relocation;
 pub use crate::elf::section::RelocationRecord;
 pub use crate::elf::section::Section;
@@ -21,16 +22,23 @@ pub use crate::elf::strtab::StrTab;
 pub use crate::elf::symbol::Symbol;
 pub use crate::elf::symtab::SymTab;
 
-pub use object::elf::SHT_NOBITS;
-pub use object::elf::SHT_REL;
-pub use object::elf::SHT_RELA;
-pub use object::elf::SHT_STRTAB;
-pub use object::elf::SHT_SYMTAB;
-pub use object::elf::STB_GLOBAL;
-pub use object::elf::STB_LOCAL;
-pub use object::elf::STT_FUNC;
-pub use object::elf::STT_NOTYPE;
-pub use object::elf::STT_SECTION;
+use crate::le::read_u16_le;
+use crate::le::read_u32_le;
+
+pub use crate::elf::section::SHT_NOBITS;
+pub use crate::elf::section::SHT_REL;
+pub use crate::elf::section::SHT_RELA;
+pub use crate::elf::section::SHT_STRTAB;
+pub use crate::elf::section::SHT_SYMTAB;
+
+// ELF symbol binding (st_info >> 4)
+pub const STB_LOCAL: u8 = 0;
+pub const STB_GLOBAL: u8 = 1;
+
+// ELF symbol type (st_info & 0xf)
+pub const STT_NOTYPE: u8 = 0;
+pub const STT_FUNC: u8 = 2;
+pub const STT_SECTION: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElfHeader {
@@ -73,19 +81,19 @@ impl Elf {
 
         let header = ElfHeader {
             ident,
-            e_type: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_machine: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_version: rdr.read_u32::<LittleEndian>().unwrap(),
-            e_entry: rdr.read_u32::<LittleEndian>().unwrap(),
-            e_phoff: rdr.read_u32::<LittleEndian>().unwrap(),
-            e_shoff: rdr.read_u32::<LittleEndian>().unwrap(),
-            e_flags: rdr.read_u32::<LittleEndian>().unwrap(),
-            e_ehsize: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_phentsize: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_phnum: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_shentsize: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_shnum: rdr.read_u16::<LittleEndian>().unwrap(),
-            e_shstrndx: rdr.read_u16::<LittleEndian>().unwrap(),
+            e_type: read_u16_le(&mut rdr),
+            e_machine: read_u16_le(&mut rdr),
+            e_version: read_u32_le(&mut rdr),
+            e_entry: read_u32_le(&mut rdr),
+            e_phoff: read_u32_le(&mut rdr),
+            e_shoff: read_u32_le(&mut rdr),
+            e_flags: read_u32_le(&mut rdr),
+            e_ehsize: read_u16_le(&mut rdr),
+            e_phentsize: read_u16_le(&mut rdr),
+            e_phnum: read_u16_le(&mut rdr),
+            e_shentsize: read_u16_le(&mut rdr),
+            e_shnum: read_u16_le(&mut rdr),
+            e_shstrndx: read_u16_le(&mut rdr),
         };
 
         let shstrtab: StrTab = {
@@ -211,10 +219,8 @@ impl Elf {
         let h = &self.header;
 
         header_cursor.write_all(&h.ident).unwrap();
-        header_cursor.write_u16::<LittleEndian>(h.e_type).unwrap();
-        header_cursor
-            .write_u16::<LittleEndian>(h.e_machine)
-            .unwrap();
+        header_cursor.write_all(&h.e_type.to_le_bytes()).unwrap();
+        header_cursor.write_all(&h.e_machine.to_le_bytes()).unwrap();
         header_cursor
             .write_u32::<LittleEndian>(h.e_version)
             .unwrap();
@@ -287,18 +293,16 @@ impl Elf {
     }
 
     pub fn add_symbol_get_index(&mut self, symbol: Symbol, force: bool) -> usize {
-        // Check if symbol already exists
-        let existing_symbol = self
-            .symtab
-            .symbols
-            .iter()
-            .enumerate()
-            .find(|(_, s)| s.name == symbol.name);
+        if !force {
+            // Check if symbol already exists
+            let existing_index = self
+                .symtab
+                .symbols
+                .iter()
+                .position(|s| s.name == symbol.name);
 
-        if let Some((index, _)) = existing_symbol {
-            if !force {
-                // Symbol exists and we're not forcing, return existing index
-                return index;
+            if let Some(index) = existing_index {
+                return index; // Symbol exists and we're not forcing
             }
         }
 
@@ -312,17 +316,19 @@ impl Elf {
         self.symtab.add_symbol(sym)
     }
 
-    pub fn function_names(&self) -> Vec<String> {
-        let mut function_symbols = self
+    pub fn function_names(&self) -> Vec<&str> {
+        let mut function_symbols: Vec<&Symbol> = self
             .get_symbols()
             .iter()
             .filter(|sym| sym.type_id() == STT_FUNC)
-            .collect::<Vec<&Symbol>>();
+            .collect();
+
         function_symbols.sort_by_key(|s| s.st_shndx);
+
         function_symbols
-            .iter()
-            .map(|sym| sym.name.clone())
-            .collect::<Vec<String>>()
+            .into_iter()
+            .map(|sym| sym.name.as_str())
+            .collect()
     }
 
     pub fn get_functions(&self) -> Vec<TextSection> {
@@ -335,7 +341,7 @@ impl Elf {
             .map(|(i, s)| {
                 let mut text = TextSection::from_section(s.clone());
                 if !function_names.is_empty() {
-                    text.function_name = function_names[i].clone();
+                    text.function_name = function_names[i].to_string();
                 }
                 text
             })
@@ -389,8 +395,8 @@ impl Elf {
     }
 
     // TODO: rename: add_sh_str
-    pub fn add_sh_symbol(&mut self, symbol_name: impl Into<String>) -> u32 {
-        self.shstrtab.add_symbol(symbol_name)
+    pub fn add_sh_symbol(&mut self, symbol_name: impl AsRef<str>) -> u32 {
+        self.shstrtab.add_symbol(symbol_name.as_ref())
     }
 
     // TODO: this is lib business logic

@@ -1,5 +1,10 @@
 use metrowrap::assembler;
+use metrowrap::workspace::{TempMode, Workspace};
 use object::{self, Object, ObjectSection, SectionKind};
+
+fn workspace() -> Workspace {
+    Workspace::new(TempMode::Normal).expect("workspace")
+}
 
 #[test]
 fn test_assembler() {
@@ -11,7 +16,10 @@ fn test_assembler() {
         macro_inc_path: Some("tests/data/macro.inc".into()),
     };
 
-    let asm_bytes = assembler.assemble_file("tests/data/Add.s").expect("asm");
+    let ws = workspace();
+    let asm_bytes = assembler
+        .assemble_file("tests/data/Add.s", ws.path())
+        .expect("asm");
 
     assert!(asm_bytes.len() > 0);
 
@@ -80,5 +88,43 @@ fn test_assembler() {
     assert!(
         matches!(no_section, None),
         "expected none, got: {no_section:?}"
+    );
+}
+
+#[test]
+fn test_assembler_macro_inc_no_parent_dir() {
+    let assembler = assembler::Assembler {
+        as_path: "mipsel-linux-gnu-as".into(),
+        as_march: "allegrex".into(),
+        as_mabi: "32".into(),
+        as_flags: vec!["-G0".into()],
+        macro_inc_path: Some("macro.inc".into()), // bare filename, no dir component
+    };
+
+    let ws = workspace();
+    // NoMacros.s doesn't reference any macros from macro.inc so missing -I is fine.
+    let result = assembler.assemble_data(
+        std::fs::File::open("tests/data/NoMacros.s").expect("NoMacros.s"),
+        ws.path(),
+    );
+    assert!(result.is_ok(), "unexpected error: {result:?}");
+}
+
+#[test]
+fn test_assembler_failure() {
+    let assembler = assembler::Assembler {
+        as_path: "mipsel-linux-gnu-as".into(),
+        as_march: "allegrex".into(),
+        as_mabi: "32".into(),
+        as_flags: vec!["-G0".into()],
+        macro_inc_path: None,
+    };
+
+    let ws = workspace();
+    let bad_asm = b"this is not valid assembly\n".as_ref();
+    let result = assembler.assemble_data(bad_asm, ws.path());
+    assert!(
+        matches!(result, Err(metrowrap::error::MWError::Assembler(_))),
+        "expected Assembler error, got: {result:?}"
     );
 }

@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: © 2026 TTKB, LLC
 // SPDX-License-Identifier: BSD-3-CLAUSE
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::fmt;
 use std::io::{Cursor, Read};
 
 use super::strtab::StrTab;
 use super::symtab::SymTab;
+use crate::le::read_u32_le;
 
-pub use object::elf::SHT_NOBITS;
-pub use object::elf::SHT_STRTAB;
-pub use object::elf::SHT_SYMTAB;
+// ELF section types (sh_type)
+pub const SHT_SYMTAB: u32 = 2;
+pub const SHT_STRTAB: u32 = 3;
+pub const SHT_RELA: u32 = 4;
+pub const SHT_NOBITS: u32 = 8;
+pub const SHT_REL: u32 = 9;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Section {
@@ -90,16 +93,16 @@ impl Section {
     }
 
     pub fn unpack(rdr: &mut Cursor<&[u8]>) -> Self {
-        let sh_name = rdr.read_u32::<LittleEndian>().unwrap(); // 1
-        let sh_type = rdr.read_u32::<LittleEndian>().unwrap(); // 2
-        let sh_flags = rdr.read_u32::<LittleEndian>().unwrap(); // 3
-        let sh_addr = rdr.read_u32::<LittleEndian>().unwrap(); // 4
-        let sh_offset = rdr.read_u32::<LittleEndian>().unwrap(); // 5
-        let sh_size = rdr.read_u32::<LittleEndian>().unwrap();
-        let sh_link = rdr.read_u32::<LittleEndian>().unwrap();
-        let sh_info = rdr.read_u32::<LittleEndian>().unwrap();
-        let sh_addralign = rdr.read_u32::<LittleEndian>().unwrap();
-        let sh_entsize = rdr.read_u32::<LittleEndian>().unwrap();
+        let sh_name = read_u32_le(rdr); // 1
+        let sh_type = read_u32_le(rdr); // 2
+        let sh_flags = read_u32_le(rdr); // 3
+        let sh_addr = read_u32_le(rdr); // 4
+        let sh_offset = read_u32_le(rdr); // 5
+        let sh_size = read_u32_le(rdr);
+        let sh_link = read_u32_le(rdr);
+        let sh_info = read_u32_le(rdr);
+        let sh_addralign = read_u32_le(rdr);
+        let sh_entsize = read_u32_le(rdr);
 
         let mut data: Vec<u8> = vec![];
         if sh_type != SHT_NOBITS {
@@ -268,8 +271,8 @@ impl Relocation {
 
     pub fn pack(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(8);
-        buf.write_u32::<LittleEndian>(self.r_offset).unwrap();
-        buf.write_u32::<LittleEndian>(self.r_info).unwrap();
+        buf.extend_from_slice(&self.r_offset.to_le_bytes());
+        buf.extend_from_slice(&self.r_info.to_le_bytes());
         buf
     }
 

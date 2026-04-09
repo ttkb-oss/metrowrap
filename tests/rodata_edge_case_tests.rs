@@ -2,16 +2,19 @@
 // Edge case and error condition tests for rodata relocation splitting
 use std::sync::Arc;
 
-use encoding_rs::UTF_8;
-
 use metrowrap;
-use metrowrap::NamedString;
+use metrowrap::NamedSource;
 use metrowrap::SourceType;
 use metrowrap::assembler::Assembler;
 use metrowrap::compiler::Compiler;
 use metrowrap::elf::{Elf, Relocation, RelocationRecord, SHT_REL, Section};
 use metrowrap::preprocessor::Preprocessor;
+use metrowrap::workspace::{TempMode, Workspace};
 use std::path::PathBuf;
+
+fn workspace() -> Workspace {
+    Workspace::new(TempMode::Normal).expect("workspace")
+}
 
 /// Helper to create test compiler
 fn create_test_compiler() -> Compiler {
@@ -81,13 +84,13 @@ fn test_relocation_offset_equals_section_size() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/single_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
+    let ws = workspace();
     let output_path = PathBuf::from("target/.private/tests/edge/boundary.o");
     let result = metrowrap::process_c_file(
         &c_content,
@@ -95,6 +98,7 @@ fn test_relocation_offset_equals_section_size() {
         &preprocessor,
         &compiler,
         &assembler,
+        &ws,
     );
 
     assert!(result.is_ok());
@@ -251,12 +255,13 @@ fn test_only_rodata() {
     let file = "tests/data/only_rodata.c";
     let c_path = PathBuf::from(file);
 
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
+
+    let ws = workspace();
 
     let output_path = PathBuf::from("target/.private/tests/edge/only_rodata.o");
     let result = metrowrap::process_c_file(
@@ -265,6 +270,7 @@ fn test_only_rodata() {
         &preprocessor,
         &compiler,
         &assembler,
+        &ws,
     );
 
     assert!(
@@ -308,12 +314,13 @@ fn test_sequential_file_processing() {
         ("tests/data/only_rodata.c", 1),
     ];
 
+    let ws = workspace();
+
     for (i, (file, expected_rodata_count)) in files.iter().enumerate() {
         let c_path = PathBuf::from(file);
-        let c_content = NamedString {
+        let c_content = NamedSource {
             source: SourceType::Path(c_path.display().to_string()),
-            content: std::fs::read_to_string(&c_path).unwrap(),
-            encoding: UTF_8,
+            content: std::fs::read(&c_path).unwrap(),
             src_dir: PathBuf::from("tests/data"),
         };
 
@@ -325,6 +332,7 @@ fn test_sequential_file_processing() {
             &preprocessor,
             &compiler,
             &assembler,
+            &ws,
         );
 
         assert!(
@@ -372,13 +380,13 @@ fn test_sh_info_bounds_checking() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/single_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
+    let ws = workspace();
     let output_path = PathBuf::from("target/.private/tests/edge/sh_info_bounds.o");
     let result = metrowrap::process_c_file(
         &c_content,
@@ -386,6 +394,7 @@ fn test_sh_info_bounds_checking() {
         &preprocessor,
         &compiler,
         &assembler,
+        &ws,
     );
 
     assert!(result.is_ok());
@@ -441,13 +450,13 @@ fn test_identical_rodata_content() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
+    let ws = workspace();
     let output_path = PathBuf::from("target/.private/tests/edge/identical_rodata.o");
     let result = metrowrap::process_c_file(
         &c_content,
@@ -455,6 +464,7 @@ fn test_identical_rodata_content() {
         &preprocessor,
         &compiler,
         &assembler,
+        &ws,
     );
 
     assert!(result.is_ok());

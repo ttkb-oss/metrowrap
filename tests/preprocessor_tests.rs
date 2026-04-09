@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: © 2026 TTKB, LLC
+// SPDX-License-Identifier: BSD-3-CLAUSE
 use std::path::PathBuf;
 
 use metrowrap::preprocessor;
@@ -8,14 +10,13 @@ fn test_no_include_asm() {
         asm_dir_prefix: None,
     };
 
-    let content = std::fs::read_to_string("tests/data/compiler.c").unwrap();
-    let (new_lines, asm_files) = preprocessor.find_macros(&content);
+    let content = std::fs::read("tests/data/compiler.c").unwrap();
+    let (segments, asm_refs) = preprocessor.find_macro_refs(&content);
 
-    assert_eq!(content, new_lines);
-    assert!(
-        asm_files.is_empty(),
-        "Expected no INCLUDE_ASM: {asm_files:?}"
-    );
+    assert!(asm_refs.is_empty(), "Expected no INCLUDE_ASM: {asm_refs:?}");
+    // No macros: single segment equal to the full content.
+    assert_eq!(1, segments.len());
+    assert_eq!(content, segments[0]);
 }
 
 #[test]
@@ -24,24 +25,19 @@ fn test_include_one_asm() {
         asm_dir_prefix: None,
     };
 
-    let content = std::fs::read_to_string("tests/data/assembler.c").unwrap();
-    let (new_lines, asm_files) = preprocessor.find_macros(&content);
+    let content = std::fs::read("tests/data/assembler.c").unwrap();
+    let (segments, asm_refs) = preprocessor.find_macro_refs(&content);
 
-    assert_eq!(1, asm_files.len());
+    assert_eq!(1, asm_refs.len());
+    assert_eq!(2, segments.len());
     assert_eq!(
-        &(PathBuf::from("tests/data/Add.s"), 0),
-        asm_files.first().unwrap()
+        (PathBuf::from("tests/data/Add.s"), "Add".to_string()),
+        asm_refs[0]
     );
 
-    // ensure whitespace is ignored where expected
-    let content = r#"#include "common.h"
-
-INCLUDE_ASM(
-    "tests/data"   ,
-    Add
-    );
-"#;
-    let (new_lines_2, asm_files_2) = preprocessor.find_macros(&content);
-    assert_eq!(new_lines, new_lines_2);
-    assert_eq!(asm_files, asm_files_2);
+    // Whitespace variants must resolve to the same path and func_name.
+    let content_ws =
+        "#include \"common.h\"\n\nINCLUDE_ASM(\n    \"tests/data\"   ,\n    Add\n    );\n";
+    let (_, asm_refs_ws) = preprocessor.find_macro_refs(content_ws.as_bytes());
+    assert_eq!(asm_refs, asm_refs_ws);
 }

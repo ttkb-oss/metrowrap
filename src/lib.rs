@@ -5,16 +5,18 @@ pub mod compiler;
 pub mod constants;
 pub mod elf;
 pub mod error;
+pub mod le;
 pub mod makerule;
 pub mod preprocessor;
+pub mod workspace;
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-use encoding_rs::Encoding;
 use rayon::prelude::*;
 use tempfile::Builder;
 
@@ -22,17 +24,12 @@ use crate::assembler::Assembler;
 use crate::compiler::Compiler;
 use crate::constants::*;
 use crate::elf::Elf;
+use crate::elf::STB_LOCAL;
 use crate::elf::Section;
 use crate::elf::section::{Relocation, RelocationRecord};
 use crate::makerule::MakeRule;
 use crate::preprocessor::Preprocessor;
-
-#[macro_export]
-macro_rules! strings {
-    ($($str:expr),*) => ({
-        vec![$(String::from($str),)*] as Vec<String>
-    });
-}
+use crate::workspace::Workspace;
 
 pub fn escape_symbol(name: &str) -> String {
     name.replace(".", SYMBOL_AT).replace("$", SYMBOL_DOLLAR)
@@ -58,76 +55,138 @@ impl SourceType {
     }
 }
 
-pub struct NamedString {
+pub struct NamedSource {
     pub source: SourceType,
-    pub content: String,
-    pub encoding: &'static Encoding,
+    pub content: Vec<u8>,
     pub src_dir: PathBuf,
 }
 
-impl NamedString {
-    fn with_tmp<F, T>(&self, f: F) -> Result<T, Box<dyn Error>>
+impl NamedSource {
+    fn with_tmp<F, T>(&self, dir: &Path, f: F) -> Result<T, Box<dyn Error>>
     where
         F: FnOnce(&Path) -> Result<T, Box<dyn Error>>,
     {
-        // TODO this should really check and do this only
-        //      for stdin. relatively expensive
-
-        let (output, _, failure) = self.encoding.encode(&self.content);
-
-        if failure {
-            panic!(
-                "Could not encode {} as {}",
-                self.source.name(),
-                self.encoding.name()
-            );
-        }
-
-        let c_file = Builder::new().suffix(".c").tempfile_in(&self.src_dir)?;
-        std::fs::write(c_file.path(), &output)?;
+        let c_file = Builder::new().suffix(".c").tempfile_in(dir)?;
+        std::fs::write(c_file.path(), &self.content)?;
         let r = f(c_file.path());
         if let Err(e) = r {
             eprintln!(
                 "Error occurred, temporary file available at {}",
                 c_file.path().display()
             );
-            // TODO: make saving intermediate temp files an option
-            // std::mem::forget(c_file);
             return Err(e);
         }
         r
     }
 }
 
+/// Extracts rodata symbol info from an assembled ELF in source order.
+///
+/// Returns `(name, size_in_bytes, is_local)` for each symbol whose section
+/// is `.rodata`, filtered to those with a non-empty name and non-zero size
+/// (i.e. real data symbols, not section markers). Sorted by section index,
+/// which equals source order because each `dlabel` gets its own
+/// `.section .rodata` block.
+fn rodata_symbols_from_elf(elf: &Elf) -> Vec<(String, usize, bool)> {
+    let mut syms: Vec<_> = elf
+        .get_symbols()
+        .iter()
+        .filter(|s| s.st_name != 0 && s.st_size > 0)
+        .filter(|s| {
+            elf.sections
+                .get(s.st_shndx as usize)
+                .map(|sec| sec.name == ".rodata")
+                .unwrap_or(false)
+        })
+        .collect();
+    syms.sort_by_key(|s| s.st_shndx);
+    syms.iter()
+        .map(|s| (s.name.clone(), s.st_size as usize, s.bind() == STB_LOCAL))
+        .collect()
+}
+
+struct ASMObject {
+    path: PathBuf,
+    main_symbol: String,
+    all_symbols: Vec<(String, usize, bool)>,
+    elf: Elf,
+}
+
 pub fn process_c_file(
-    c_content: &NamedString,
-    o_file: &Path, // TODO: make a WRITER
+    c_content: &NamedSource,
+    o_file: &Path,
     preprocessor: &Arc<Preprocessor>,
     compiler: &Compiler,
     assembler: &Assembler,
+    workspace: &Workspace,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Preprocess to find INCLUDE_ASM macros and produce stub source.
-    let (new_lines, asm_files) = preprocessor.find_macros(&c_content.content);
+    let ws = workspace.path();
 
-    if asm_files.is_empty() {
+    // 1. Scan source for INCLUDE_ASM/INCLUDE_RODATA macros.
+    //    Returns content split into segments around each macro call, and the
+    //    ordered list of (asm_path, func_name) pairs. No .s files are read here.
+    let (segments, asm_refs) = preprocessor.find_macro_refs(&c_content.content);
+
+    if asm_refs.is_empty() {
         // No INCLUDE_ASM macros: compile the original file directly and we're done.
-        let (obj_bytes, make_rule) = c_content
-            .with_tmp(|c_file| Ok(compiler.compile_file(c_file, c_content.source.name())?))?;
+        let (obj_bytes, make_rule) = c_content.with_tmp(ws, |c_file| {
+            Ok(compiler.compile_file(c_file, c_content.source.name(), ws)?)
+        })?;
         write_dependency_file(compiler, make_rule, c_content, o_file)?;
         return write_obj(o_file, &obj_bytes);
     }
 
-    // 3. Create temp C file with stubs
-    let temp_c = Builder::new()
-        .suffix(".c")
-        .tempfile_in(&c_content.src_dir)?;
-    std::fs::write(temp_c.path(), new_lines)?;
+    // 2. Assemble all .s files in parallel and extract rodata symbol info from
+    //    each assembled ELF. This is the sole source of truth for symbol names,
+    //    sizes, and locality - no .s source parsing occurs.
+    let asm_objects: Vec<ASMObject> = asm_refs
+        .par_iter()
+        .map(|(asm_file, func_name)| {
+            let assembled_bytes = assembler
+                .assemble_file(asm_file, ws)
+                .expect("assembled bytes");
+            let elf = Elf::from_bytes(&assembled_bytes);
+            let rodata_syms = rodata_symbols_from_elf(&elf);
+            ASMObject {
+                path: asm_file.clone(),
+                main_symbol: func_name.clone(),
+                all_symbols: rodata_syms,
+                elf,
+            }
+        })
+        .collect();
 
+    // 3. Build the stub C source by interleaving the original content segments
+    //    with the generated stubs. Each stub is derived entirely from the
+    //    assembled ELF, not from parsing the .s source.
+    let mut temp_c = Builder::new()
+        .suffix(".c")
+        .tempfile_in(&c_content.src_dir)?; // TODO: try to move into workspace
+
+    for (i, asm_object) in asm_objects.iter().enumerate() {
+        temp_c.write_all(segments[i])?;
+        let text_byte_count = asm_object
+            .elf
+            .get_functions()
+            .into_iter()
+            .next()
+            .map(|f| f.section.data.len())
+            .unwrap_or(0);
+        temp_c.write_all(&Preprocessor::stub_for(
+            &asm_object.main_symbol,
+            text_byte_count,
+            &asm_object.all_symbols,
+        ))?;
+    }
+    temp_c.write_all(segments[asm_objects.len()])?;
+    temp_c.flush()?;
+
+    // 4. Compile the stub C source.
     let (recompiled_bytes, make_rule) =
-        compiler.compile_file(temp_c.path(), c_content.source.name())?;
+        compiler.compile_file(temp_c.path(), c_content.source.name(), ws)?;
     let mut compiled_elf = Elf::from_bytes(&recompiled_bytes);
 
-    let rel_text_sh_name = compiled_elf.add_sh_symbol(".rel.text".to_string());
+    let rel_text_sh_name = compiled_elf.add_sh_symbol(".rel.text");
 
     let stub_functions: HashSet<String> = compiled_elf
         .function_names()
@@ -145,27 +204,27 @@ pub fn process_c_file(
         .map(|sym| (sym.name.clone(), sym.st_shndx))
         .collect();
 
-    let asm_objects: Vec<(&PathBuf, usize, Vec<u8>)> = asm_files
-        .par_iter()
-        .map(|(asm_file, num_rodata_symbols)| {
-            let assembled_bytes = assembler.assemble_file(asm_file).expect("assembled bytes");
-            (asm_file, *num_rodata_symbols, assembled_bytes)
-        })
-        .collect();
+    for mut asm_object /*(asm_file, main_symbol, rodata_syms, mut assembled_elf)*/ in asm_objects {
+        let num_rodata_symbols = asm_object.all_symbols.len();
 
-    for (asm_file, num_rodata_symbols, assembled_bytes) in asm_objects {
-        let function = asm_file.file_stem().unwrap().to_str().unwrap();
-
-        let mut assembled_elf = Elf::from_bytes(&assembled_bytes);
-
-        let asm_functions = assembled_elf.get_functions();
-        assert_eq!(1, asm_functions.len());
-
-        let asm_text = &asm_functions[0].section.data;
+        // Extract text bytes from the assembled ELF. INCLUDE_RODATA files have
+        // no function symbol and no text, so this yields an empty vec.
+        let asm_functions = asm_object.elf.get_functions();
+        assert!(
+            asm_functions.len() <= 1,
+            "{}: expected at most 1 function, found {}",
+            asm_object.path.display(),
+            asm_functions.len()
+        );
+        let asm_text_owned: Vec<u8> = asm_functions
+            .into_iter()
+            .next()
+            .map(|f| f.section.data)
+            .unwrap_or_default();
+        let asm_text = &asm_text_owned;
 
         // if this is a function and that function is not an INCLUDE_ASM, ignore
-        let asm_main_symbol = asm_file.file_stem().unwrap().display().to_string();
-        if !asm_text.is_empty() && !stub_functions.contains(&asm_main_symbol) {
+        if !asm_text.is_empty() && !stub_functions.contains(&asm_object.main_symbol) {
             continue;
         }
 
@@ -173,7 +232,7 @@ pub fn process_c_file(
         let mut text_section_index: usize = 0xFFFFFFFF;
 
         if !asm_text.is_empty() {
-            text_section_index = compiled_elf.text_section_by_name(function);
+            text_section_index = compiled_elf.text_section_by_name(&asm_object.main_symbol);
 
             // assumption is that .rodata will immediately follow the .text section
             if num_rodata_symbols > 0 {
@@ -199,7 +258,8 @@ pub fn process_c_file(
             let text_section = &mut compiled_elf.sections[text_section_index];
             assert!(
                 asm_text.len() >= text_section.data.len(),
-                "Not enough assembly to fill {function} in {}",
+                "Not enough assembly to fill {} in {}",
+                asm_object.main_symbol,
                 c_content.source.name()
             );
             text_section.data = asm_text[..text_section.data.len()].to_vec();
@@ -210,14 +270,14 @@ pub fn process_c_file(
         } else {
             // this file only contains rodata
             assert_eq!(1, num_rodata_symbols);
-            let idx = symbol_to_section_idx[function];
+            let idx = symbol_to_section_idx[&asm_object.main_symbol];
             rodata_section_indices.push(idx.into());
         }
 
         let mut rodata_section_offsets: Vec<usize> = vec![];
 
         let rel_rodata_sh_name = if num_rodata_symbols > 0 {
-            let rodata_sections = assembled_elf.rodata_sections();
+            let rodata_sections = asm_object.elf.rodata_sections();
             assert_eq!(
                 1,
                 rodata_sections.len(),
@@ -244,11 +304,11 @@ pub fn process_c_file(
             0xFFFFFFFFu32
         };
 
-        let relocation_records = assembled_elf.reloc_sections();
+        let relocation_records = asm_object.elf.reloc_sections();
         assert!(
             relocation_records.len() < 3,
             "{} has too many relocation records",
-            asm_file.display()
+            asm_object.path.display()
         );
         let mut reloc_symbols: HashSet<String> = HashSet::new();
 
@@ -267,7 +327,7 @@ pub fn process_c_file(
                 relocation_record.sh_info = rodata_section_indices[0] as u32;
             }
 
-            let mut assembled_symtab = assembled_elf.symtab().clone();
+            let mut assembled_symtab = asm_object.elf.symtab().clone();
             let mut rr = RelocationRecord::new(relocation_record);
 
             for relocation in &mut rr.relocations {
@@ -287,7 +347,7 @@ pub fn process_c_file(
                 reloc_symbols.insert(symbol.name.clone());
             }
             rr.pack();
-            assembled_elf.set_symtab(&assembled_symtab);
+            asm_object.elf.set_symtab(&assembled_symtab);
             compiled_elf.add_section(rr.section);
         }
 
@@ -375,7 +435,7 @@ pub fn process_c_file(
             }
         }
 
-        for symbol in assembled_elf.get_symbols() {
+        for symbol in asm_object.elf.get_symbols() {
             if symbol.st_name == 0 {
                 continue; // Skip null symbol
             }
@@ -384,7 +444,7 @@ pub fn process_c_file(
                 continue; // Ignore local symbols
             }
 
-            // TODO: is the symbol text alread here?
+            // TODO: is the symbol text already here?
             if !asm_text.is_empty() && !reloc_symbols.contains(&symbol.name) {
                 let mut sym = symbol.clone();
                 sym.st_shndx = text_section_index as u16;
@@ -418,7 +478,7 @@ pub fn write_obj<P: AsRef<Path>>(path: P, bytes: &[u8]) -> Result<(), Box<dyn st
 fn write_dependency_file<P: AsRef<Path>>(
     compiler: &Compiler,
     make_rule: Option<MakeRule>,
-    c_content: &NamedString,
+    c_content: &NamedSource,
     o_file: P,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(mut make_rule) = make_rule else {
@@ -460,4 +520,27 @@ fn write_dependency_file<P: AsRef<Path>>(
     std::fs::write(&d_file, make_rule.as_str().as_bytes())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_symbol() {
+        assert_eq!(escape_symbol("foo.bar$baz"), "foo__at__bar__dollar__baz");
+    }
+
+    #[test]
+    fn test_unescape_symbol() {
+        assert_eq!(unescape_symbol("foo__at__bar__dollar__baz"), "foo.bar$baz");
+    }
+
+    #[test]
+    fn test_roundtrip_symbol() {
+        assert_eq!(
+            unescape_symbol(&escape_symbol("foo.bar$baz")),
+            "foo.bar$baz"
+        );
+    }
 }

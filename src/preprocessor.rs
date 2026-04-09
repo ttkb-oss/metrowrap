@@ -1,36 +1,23 @@
 // SPDX-FileCopyrightText: © 2026 TTKB, LLC
 // SPDX-License-Identifier: BSD-3-CLAUSE
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
-use unescape::unescape;
+use memchr::memmem;
+use regex::bytes::Regex;
 
 use crate::constants::*;
-
-#[derive(Debug, PartialEq)]
-pub struct Symbol {
-    pub name: String,
-    pub size: usize,
-    pub local: bool,
-}
 
 #[derive(Debug)]
 pub struct Preprocessor {
     pub asm_dir_prefix: Option<PathBuf>,
 }
 
-static STRING_REGEX: OnceLock<Regex> = OnceLock::new();
-
-fn string_regex() -> &'static Regex {
-    STRING_REGEX.get_or_init(|| Regex::new(r#"^\.(asci[iz])\s+"(.*)""#).unwrap())
-}
-
 static INCLUDE_REGEX: OnceLock<Regex> = OnceLock::new();
 fn include_regex() -> &'static Regex {
-    INCLUDE_REGEX
-        .get_or_init(|| Regex::new(r#"INCLUDE_(?:ASM|RODATA)\(\s*"(.*)"\s*,\s*(.*)\s*\)"#).unwrap())
+    INCLUDE_REGEX.get_or_init(|| {
+        Regex::new(r#"INCLUDE_(?:ASM|RODATA)\(\s*"([^"]*)"\s*,\s*([a-zA-Z0-9$_]*)\s*\)"#).unwrap()
+    })
 }
 
 impl Preprocessor {
@@ -38,326 +25,178 @@ impl Preprocessor {
         Self { asm_dir_prefix }
     }
 
-    pub fn preprocess_s_file(function_name: &str, content: &str) -> (Vec<String>, Vec<Symbol>) {
-        // eprintln!("preprocessing: {function_name}");
-        let mut rodata_entries = Vec::new();
-        let mut c_lines = Vec::new();
-        let mut nops_needed = 0;
-        let mut in_rodata = false;
-        let mut current_symbol: Option<usize> = None;
-
-        let mut i = 0;
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            if line.starts_with(".section") {
-                if line.ends_with(".text") {
-                    in_rodata = false;
-                    continue;
-                }
-                if line.ends_with(".rodata") {
-                    in_rodata = true;
-                    continue;
-                }
-
-                panic!("Unsupported .section found at line {}: {line}", i + 1);
-            }
-
-            if in_rodata {
-                if line.starts_with(".align") {
-                    continue;
-                }
-                if line.starts_with(".size") {
-                    continue;
-                }
-
-                if line.starts_with("glabel") || line.starts_with("dlabel") {
-                    let prefix_str = line.replace(LOCAL_SUFFIX, "");
-                    let parts: Vec<&str> = prefix_str.split_whitespace().collect();
-
-                    let name = parts[1].to_string();
-                    let is_local = line.ends_with(LOCAL_SUFFIX) || name.contains(DOLLAR_SIGN);
-                    rodata_entries.push(Symbol {
-                        name,
-                        size: 0,
-                        local: is_local,
-                    });
-                    current_symbol = Some(rodata_entries.len() - 1);
-
-                    continue;
-                }
-
-                if let Some(idx) = current_symbol {
-                    if line.contains(".byte ") {
-                        rodata_entries[idx].size += 1;
-                        continue;
-                    } else if line.contains(".short ") {
-                        rodata_entries[idx].size += 2;
-                        continue;
-                    } else if line.contains(".word ")
-                        || line.contains(".long ")
-                        || line.contains(".float ")
-                    {
-                        rodata_entries[idx].size += 4;
-                        continue;
-                    } else if line.contains(".double ") {
-                        rodata_entries[idx].size += 8;
-                        continue;
-                    } else if let Some(caps) = string_regex().captures(line) {
-                        // 1. Extract type and literal
-                        let directive = &caps[1];
-                        let literal = &caps[2];
-
-                        // 2. Unescape the string to get actual bytes
-                        // unescape() expects the content without the surrounding quotes
-                        if let Some(unescaped) = unescape(literal) {
-                            let mut len = unescaped.len();
-
-                            // 3. Match asciz condition (null terminator)
-                            if directive == "asciz" {
-                                len += 1;
-                            }
-                            rodata_entries[idx].size += len;
-                        }
-                        continue;
-                    }
-                }
-                panic!(
-                    "Unexpected entry in .rodata section at line {}: {line}",
-                    i + 1
-                );
-            } else {
-                if line.starts_with(".set")
-                    || line.starts_with(".include")
-                    || line.starts_with(".size")
-                    || line.starts_with(".align")
-                    || line.starts_with(".balign")
-                    || line.starts_with("glabel")
-                    || line.starts_with("endlabel")
-                    || line.starts_with("jlabel")
-                    || line.starts_with(".L")
-                    || line.ends_with(":")
-                    || line.starts_with("/* Generated by spimdisasm")
-                    || line.starts_with("nonmatching")
-                    || line.starts_with("/* Handwritten function")
-                    || line.starts_with("#")
-                {
-                    continue;
-                }
-                // Simplified text section scan
-                if !line.starts_with('.') && !line.contains(':') {
-                    nops_needed += 1;
-                }
-            }
-
-            i += 1;
+    /// Scans `content` for `INCLUDE_ASM`/`INCLUDE_RODATA` macros and returns:
+    ///
+    /// - `segments`: the content split around each macro call. `segments[i]` is
+    ///   the bytes before `asm_refs[i]`; `segments[n]` is the bytes after the last
+    ///   macro. There are always exactly `asm_refs.len() + 1` segments.
+    /// - `asm_refs`: `(asm_path, func_name)` for each macro, in source order.
+    ///   The .s file is not read; only the path is resolved.
+    pub fn find_macro_refs<'a>(
+        &self,
+        content: &'a [u8],
+    ) -> (Vec<&'a [u8]>, Vec<(PathBuf, String)>) {
+        // if `INCLUDE_` doesn't exist in the string, skip everything
+        if memmem::find(content, b"INCLUDE_").is_none() {
+            return (vec![content], vec![]);
         }
 
-        if nops_needed > 0 {
-            c_lines.push(format!("asm void {}() {{", function_name));
-            for _ in 0..nops_needed {
-                c_lines.push("  nop".to_string());
-            }
-            c_lines.push("}".to_string());
-        }
-
-        for sym in &rodata_entries {
-            let prefix = if sym.local { "static " } else { "" };
-            let size = sym.size;
-
-            let sym_name = if sym.name.starts_with("\"@") && sym.name.ends_with("\"") {
-                SYMBOL_AT.to_owned() + &sym.name[2..(sym.name.len() - 1)]
-            } else if sym.name.contains(DOLLAR_SIGN) {
-                sym.name.replace(DOLLAR_SIGN, SYMBOL_DOLLAR)
-            } else {
-                sym.name.to_owned()
-            };
-
-            c_lines.push(format!(
-                "{}const unsigned char {}[{}] = {{0}};",
-                prefix, sym_name, size
-            ));
-        }
-
-        (c_lines, rodata_entries)
-    }
-
-    pub fn find_macros(&self, content: &str) -> (String, Vec<(PathBuf, usize)>) {
-        let mut out_lines = String::with_capacity(content.len());
-        let mut asm_files = vec![];
-
-        let include_regex = include_regex();
-
+        let mut segments = vec![];
+        let mut asm_refs = vec![];
         let mut last_match = 0;
-        for caps in include_regex.captures_iter(content) {
+
+        for caps in include_regex().captures_iter(content) {
             let m = caps.get(0).unwrap();
-            out_lines.push_str(&content[last_match..m.start()]);
+            segments.push(&content[last_match..m.start()]);
             last_match = m.end();
 
-            let asm_dir = Path::new(&caps[1]);
-            let asm_func = &caps[2];
+            // The inner captures are guaranteed to be ASCII by the regex bounds,
+            // so from_utf8 will safely unwrap.
+            let asm_dir_str = std::str::from_utf8(&caps[1]).unwrap();
+            let func_name_str = std::str::from_utf8(&caps[2]).unwrap();
 
-            let mut asm_path = asm_dir.join(format!("{}.s", asm_func));
+            let asm_dir = Path::new(asm_dir_str);
+            let func_name = func_name_str.trim().to_string();
+
+            let mut asm_path = asm_dir.join(format!("{}.s", func_name));
             if let Some(prefix) = &self.asm_dir_prefix {
-                asm_path = prefix.join(asm_path);
+                asm_path = prefix.join(&asm_path);
             }
 
-            if let Ok(asm_content) = fs::read_to_string(&asm_path) {
-                let (stubs, rodata_entries) =
-                    Self::preprocess_s_file(&format!("{FUNCTION_PREFIX}{asm_func}"), &asm_content);
-                asm_files.push((asm_path, rodata_entries.len()));
-                for stub in stubs {
-                    out_lines.push_str(&stub);
-                    out_lines.push('\n');
-                }
+            asm_refs.push((asm_path, func_name));
+        }
+        segments.push(&content[last_match..]);
+
+        (segments, asm_refs)
+    }
+
+    /// Generates the stub C source for one assembled file given data extracted
+    /// from the assembled ELF. Returns an empty string if there is nothing to emit.
+    ///
+    /// - `func_name`: the bare function name (without `FUNCTION_PREFIX`).
+    /// - `text_byte_count`: size in bytes of the assembled `.text` section;
+    ///   0 for `INCLUDE_RODATA` files that have no text.
+    /// - `rodata_syms`: `(name, size_in_bytes, is_local)` for each rodata symbol,
+    ///   in source order. Names are taken directly from the ELF symtab.
+    pub fn stub_for(
+        func_name: &str,
+        text_byte_count: usize,
+        rodata_syms: &[(String, usize, bool)],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+
+        if text_byte_count > 0 {
+            let nops = text_byte_count / 4;
+            out.extend_from_slice(
+                format!("asm void {FUNCTION_PREFIX}{func_name}() {{\n").as_bytes(),
+            );
+            for _ in 0..nops {
+                out.extend_from_slice(b"  nop\n");
             }
+            out.extend_from_slice(b"}\n");
         }
-        if last_match == 0 {
-            out_lines = String::from(content);
-        } else {
-            out_lines.push_str(&content[last_match..]);
+
+        for (name, size, is_local) in rodata_syms {
+            if *is_local {
+                out.extend_from_slice("static ".as_bytes());
+            };
+            out.extend_from_slice("const unsigned char ".as_bytes());
+            // Escape . and $ in symbol names to produce a valid C identifier.
+            let c_name = name.replace('.', SYMBOL_AT).replace('$', SYMBOL_DOLLAR);
+            out.extend_from_slice(c_name.as_bytes());
+            out.extend_from_slice(format!("[{size}]").as_bytes());
+            out.extend_from_slice(" = {{0}};\n".as_bytes());
         }
-        (out_lines, asm_files)
+
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::preprocessor::{Preprocessor, Symbol};
+    use super::*;
+    use std::path::PathBuf;
 
-    #[test]
-    fn test_empty() {
-        let (c_lines, rodata_entries) = Preprocessor::preprocess_s_file("empty.s", "");
-        assert_eq!(c_lines.len(), 0);
-        assert_eq!(rodata_entries.len(), 0);
+    fn pp() -> Preprocessor {
+        Preprocessor {
+            asm_dir_prefix: None,
+        }
     }
 
     #[test]
-    fn test_empty_function() {
-        let asm_contents = ".section .text\nglabel empty_func";
-        let (c_lines, rodata_entries) =
-            Preprocessor::preprocess_s_file("text_only.s", asm_contents);
-        assert_eq!(c_lines, Vec::<String>::new());
-        assert_eq!(rodata_entries, Vec::<Symbol>::new());
+    fn test_find_macro_refs_none() {
+        let content = std::fs::read_to_string("tests/data/compiler.c").unwrap();
+        let (segments, asm_refs) = pp().find_macro_refs(content.as_bytes());
+        assert!(asm_refs.is_empty());
+        assert_eq!(1, segments.len());
+        assert_eq!(content.as_bytes(), segments[0]);
     }
 
     #[test]
-    fn test_simple() {
-        let asm_contents = r#"
-.set noat
-.set noreorder
-glabel Bg_Disp_Switch
-    addiu      $sp, $sp, -0x10
-    sb         $a0, 0x0($sp)
-    lbu        $v1, 0x0($sp)
-    sb         $v1, %gp_rel(bg_disp_off)($gp)
-    addiu      $sp, $sp, 0x10
-    jr         $ra
-    nop
-.size Bg_Disp_Switch, . - Bg_Disp_Switch
-    nop
-"#;
-        let (c_lines, _) = Preprocessor::preprocess_s_file("simple.s", asm_contents);
-
-        // eprintln!("c clines: {c_lines:?}");
-
-        // 8 instructions total (including 2 nops) + 2 wrapper lines (asm void { ... })
-        let expected_nops = 8;
-        assert_eq!(c_lines.len(), expected_nops + 2);
+    fn test_find_macro_refs_one() {
+        let content = std::fs::read_to_string("tests/data/assembler.c").unwrap();
+        let (segments, asm_refs) = pp().find_macro_refs(content.as_bytes());
+        assert_eq!(1, asm_refs.len());
+        assert_eq!(2, segments.len());
+        assert_eq!(
+            (PathBuf::from("tests/data/Add.s"), "Add".to_string()),
+            asm_refs[0]
+        );
     }
 
     #[test]
-    fn test_rodata_words() {
-        let asm_contents = r#"
-.section .rodata
-.align 3
-dlabel literal_515_00552620
-    .word 0x00396B08
-    .word 0x00396B08
-    .word 0x00396AD0
-    .word 0x00396B08
-    .word 0x00396AD0
-    .word 0x00396A30
-    .word 0x00396AE8
-    .word 0x00396A58
-    .word 0x00396B08
-    .word 0x00396A78
-    .word 0x00000000
-    .word 0x00000000
-.size literal_515_00552620, . - literal_515_00552620
-"#;
-        let (c_lines, rodata_entries) = Preprocessor::preprocess_s_file("rodata.s", asm_contents);
-
-        assert_eq!(c_lines.len(), 1);
-        let sym = rodata_entries
-            .iter()
-            .find(|s| s.name == "literal_515_00552620")
-            .unwrap();
-        assert_eq!(sym.size, 12 * 4);
+    fn test_find_macro_refs_whitespace() {
+        // Both whitespace variants must resolve to the same path and func_name.
+        let inline = "#include \"common.h\"\nINCLUDE_ASM(\"tests/data\", Add);\n";
+        let multiline =
+            "#include \"common.h\"\nINCLUDE_ASM(\n    \"tests/data\"   ,\n    Add\n    );\n";
+        let (segs_a, refs_a) = pp().find_macro_refs(inline.as_bytes());
+        let (segs_b, refs_b) = pp().find_macro_refs(multiline.as_bytes());
+        assert_eq!(refs_a, refs_b);
+        // segments differ only in the whitespace around the macro call, not in
+        // the func_name or path resolution.
+        assert_eq!(segs_a.len(), segs_b.len());
     }
 
     #[test]
-    fn test_rodata_asciz() {
-        let asm_contents = r#"
-.section .rodata
-.align 2
-dlabel foobar
-    .asciz "SHAUN PALMER"
-.size foobar, . - foobar
-"#;
-        let (_, rodata_entries) = Preprocessor::preprocess_s_file("asciz.s", asm_contents);
-
-        let sym = rodata_entries.iter().find(|s| s.name == "foobar").unwrap();
-        // 12 chars + 1 null terminator
-        assert_eq!(sym.size, 13);
+    fn test_stub_for_text_only() {
+        let stub_bytes = Preprocessor::stub_for("MyFunc", 12, &[]);
+        let stub = String::from_utf8(stub_bytes).unwrap();
+        assert!(stub.contains(&format!("asm void {FUNCTION_PREFIX}MyFunc()")));
+        assert_eq!(3, stub.lines().filter(|l| l.trim() == "nop").count());
+        assert!(!stub.contains("unsigned char"));
     }
 
     #[test]
-    fn test_local_symbol() {
-        let asm_contents = r#"
-.section .rodata
-glabel D_psp_0914A7B8, local
-    .word 0x12345678
-"#;
-        let (c_lines, rodata_entries) = Preprocessor::preprocess_s_file("local.s", asm_contents);
-
-        // eprintln!("rodata entries: {:?}", rodata_entries);
-        // eprintln!("c_lines: {:?}", c_lines);
-
-        let sym = rodata_entries
-            .iter()
-            .find(|s| s.name == "D_psp_0914A7B8")
-            .unwrap();
-        assert!(sym.local);
-        assert!(c_lines[0].starts_with("static "));
+    fn test_stub_for_rodata_only() {
+        let syms = vec![("my_const".to_string(), 16, false)];
+        let stub_bytes = Preprocessor::stub_for("my_const", 0, &syms);
+        let stub = String::from_utf8(stub_bytes).unwrap();
+        assert!(!stub.contains("asm void"));
+        assert!(stub.contains("const unsigned char my_const[16]"));
+        assert!(!stub.contains("static"));
     }
 
     #[test]
-    fn test_dollar_symbol() {
-        let asm_contents = r#"
-.section .rodata
-dlabel foo$bar$baz
-    .word 0x1234
-"#;
-        let (_, rodata_entries) = Preprocessor::preprocess_s_file("dollar.s", asm_contents);
-        let sym = rodata_entries
-            .iter()
-            .find(|s| s.name == "foo$bar$baz")
-            .unwrap();
-        println!("sym: {sym:?}");
-        assert!(sym.local); // Symbols with $ are treated as local in this tool
+    fn test_stub_for_text_and_rodata() {
+        let syms = vec![
+            ("greeting".to_string(), 6, false),
+            ("local_data".to_string(), 4, true),
+        ];
+        let stub_bytes = Preprocessor::stub_for("AsmWithRodata", 24, &syms);
+        let stub = String::from_utf8(stub_bytes).unwrap();
+        assert!(stub.contains(&format!("asm void {FUNCTION_PREFIX}AsmWithRodata()")));
+        assert_eq!(6, stub.lines().filter(|l| l.trim() == "nop").count());
+        assert!(stub.contains("const unsigned char greeting[6]"));
+        assert!(stub.contains("static const unsigned char local_data[4]"));
     }
 
     #[test]
-    #[should_panic]
-    fn test_rodata_unknown_directive() {
-        let asm_contents = ".section .rodata\ndlabel my_literal\n    .weird 0x1234";
-        // Preprocessor should ideally return a Result for errors
-        // (Assuming you updated the signature to return Result)
-        Preprocessor::preprocess_s_file("unknown.s", asm_contents);
+    fn test_stub_for_dollar_escape() {
+        let syms = vec![("foo$bar".to_string(), 4, true)];
+        let stub_bytes = Preprocessor::stub_for("Fn", 4, &syms);
+        let stub = String::from_utf8(stub_bytes).unwrap();
+        assert!(stub.contains("foo__dollar__bar"), "got: {stub}");
+        assert!(!stub.contains("foo$bar"), "got: {stub}");
     }
 }

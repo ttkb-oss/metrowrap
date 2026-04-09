@@ -7,7 +7,7 @@
 
 .macro glabel label
     .global \label
-    /* .n.b.! this seems is this necessary, but i don't see it in mwccgap */
+    /* .n.b.! it seems is this necessary, but i don't see it in mwccgap */
     .type \label, %function
     \label:
 .endm

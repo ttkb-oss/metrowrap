@@ -2,16 +2,10 @@ To Do
 =====
 
 
-[] use a single tmpdir workspace
 [] support preprocessor output
 [] modify args to gcc style
-[] replace --src-dir with either `-I` or real preprocessor support
 [] base `as_flags` arg on sdatathreshold (as comented in mwccgap.py)
-[] see if s files can be inlined
 [] integrate pspas
-[] currently, stdin is written next to the original file using the `--src-dir` option. that should be more flexible.
-   instead of --src-dir, -I can be used to fix search paths
-[] use `-fexec-charset=` instead of `--target-encoding`
 [] look into more standardized args for asm-dir/macro-inc-path
 
 
@@ -38,3 +32,9 @@ To Done
 [x] translate error paths
 [x] compare each stage to mwccgap and snapshot commit at that point
   [x] then modify args to GCC style
+[x] avoid reading ASM files at all
+[x] use /dev/shm instead of a temp file for assembler output
+[x] use a single tmpdir workspace
+[x] currently, stdin is written next to the original file using the `--src-dir` option. that should be more flexible.
+   instead of --src-dir, -I can be used to fix search paths
+[x] see if s files can be inlined (they cannot)

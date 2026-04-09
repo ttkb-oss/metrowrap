@@ -1,16 +1,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use encoding_rs::UTF_8;
-
 use metrowrap;
-use metrowrap::NamedString;
+use metrowrap::NamedSource;
 use metrowrap::SourceType;
 use metrowrap::assembler;
 use metrowrap::compiler;
 use metrowrap::preprocessor;
+use metrowrap::workspace::{TempMode, Workspace};
 
 use object::{self, Object, ObjectSection, SectionKind};
+
+fn workspace() -> Workspace {
+    Workspace::new(TempMode::Normal).expect("workspace")
+}
 
 #[test]
 fn test_process_c_file() {
@@ -48,10 +51,9 @@ fn test_process_c_file() {
     };
 
     let c_path = PathBuf::from("tests/data/assembler.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -61,6 +63,7 @@ fn test_process_c_file() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(matches!(result, Ok(())), "this is not ok: {result:?}");
@@ -91,10 +94,9 @@ fn test_process_c_file_no_include_asm() {
     };
 
     let c_path = PathBuf::from("tests/data/compiler.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -104,6 +106,7 @@ fn test_process_c_file_no_include_asm() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     )
     .expect("process_c_file");
 
@@ -201,18 +204,23 @@ fn test_process_c_file_conditional_include_asm_no_include() {
     };
 
     let c_path = PathBuf::from("tests/data/conditional.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
     let output = PathBuf::from("target/.private/tests/metrowrap/process_c_file/conditional-no.o");
 
-    let _result =
-        metrowrap::process_c_file(&c_content, &output, &preprocessor, &compiler, &assembler)
-            .expect("process_c_file");
+    let _result = metrowrap::process_c_file(
+        &c_content,
+        &output,
+        &preprocessor,
+        &compiler,
+        &assembler,
+        &workspace(),
+    )
+    .expect("process_c_file");
 
     let obj_bytes = std::fs::read(output).expect("conditional-no.o");
     let obj = object::File::parse(&*obj_bytes).expect("no object");
@@ -329,18 +337,23 @@ fn test_process_c_file_conditional_include_asm_yes_include() {
     };
 
     let c_path = PathBuf::from("tests/data/conditional.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
     let output = PathBuf::from("target/.private/tests/metrowrap/process_c_file/conditional-yes.o");
 
-    let _result =
-        metrowrap::process_c_file(&c_content, &output, &preprocessor, &compiler, &assembler)
-            .expect("process_c_file");
+    let _result = metrowrap::process_c_file(
+        &c_content,
+        &output,
+        &preprocessor,
+        &compiler,
+        &assembler,
+        &workspace(),
+    )
+    .expect("process_c_file");
 
     let obj_bytes = std::fs::read(output).expect("conditional-yes.o");
     let obj = object::File::parse(&*obj_bytes).expect("no object");
@@ -426,6 +439,7 @@ fn test_process_c_file_conditional_include_asm_yes_include() {
     //  [ 6] .mwcats           LOUSER+0x4a2a82 00000000 000120 000008 00      5   0  4
     //  [ 7] .rel.mwcats       REL             00000000 000130 000008 08      1   6  0
 }
+
 #[test]
 fn test_rewritten_c_file() {
     let preprocessor = preprocessor::Preprocessor {
@@ -440,16 +454,67 @@ fn test_rewritten_c_file() {
         "target/.private/bin/wibo".into(),
     );
 
-    // 2. Preprocess to find INCLUDE_ASM macros
-    let content = std::fs::read_to_string("tests/data/assembler.c").expect("");
-    let (new_lines, _asm_files) = preprocessor.find_macros(&content);
+    let assembler = assembler::Assembler {
+        as_path: "mipsel-linux-gnu-as".into(),
+        as_march: "allegrex".into(),
+        as_mabi: "32".into(),
+        as_flags: vec!["-G0".into()],
+        macro_inc_path: Some("tests/data/macro.inc".into()),
+    };
+
+    let ws = workspace();
+
+    // 1. Scan for INCLUDE_ASM macros - no .s file parsing.
+    let content = std::fs::read("tests/data/assembler.c").expect("");
+    let (segments, asm_refs) = preprocessor.find_macro_refs(&content);
+
+    // 2. Assemble each referenced .s file and derive stub info from the ELF.
+    let mut stub_source = Vec::new();
+    for (i, (asm_path, func_name)) in asm_refs.iter().enumerate() {
+        stub_source.extend_from_slice(&segments[i]);
+        let elf = metrowrap::elf::Elf::from_bytes(
+            &assembler
+                .assemble_file(asm_path, ws.path())
+                .expect("assembled"),
+        );
+        let text_byte_count = elf
+            .get_functions()
+            .into_iter()
+            .next()
+            .map(|f| f.section.data.len())
+            .unwrap_or(0);
+        let rodata_syms: Vec<(String, usize, bool)> = {
+            use metrowrap::elf::STB_LOCAL;
+            let mut syms: Vec<_> = elf
+                .get_symbols()
+                .iter()
+                .filter(|s| s.st_name != 0 && s.st_size > 0)
+                .filter(|s| {
+                    elf.sections
+                        .get(s.st_shndx as usize)
+                        .map(|sec| sec.name == ".rodata")
+                        .unwrap_or(false)
+                })
+                .collect();
+            syms.sort_by_key(|s| s.st_shndx);
+            syms.iter()
+                .map(|s| (s.name.clone(), s.st_size as usize, s.bind() == STB_LOCAL))
+                .collect()
+        };
+        stub_source.extend_from_slice(&preprocessor::Preprocessor::stub_for(
+            func_name,
+            text_byte_count,
+            &rodata_syms,
+        ));
+    }
+    stub_source.extend_from_slice(&segments[asm_refs.len()]);
 
     let temp_c = tempfile::NamedTempFile::with_suffix(".c").expect("temp_string");
-    std::fs::write(temp_c.path(), new_lines).expect("temp_c file");
+    std::fs::write(temp_c.path(), stub_source).expect("temp_c file");
 
     // Re-compile with stubs
     let (recompiled_bytes, _) = compiler
-        .compile_file(temp_c.path(), "tests/data/assembler.c")
+        .compile_file(temp_c.path(), "tests/data/assembler.c", ws.path())
         .expect("recompile");
     std::fs::write("/tmp/recompiled.o", &recompiled_bytes).expect("debug file");
 

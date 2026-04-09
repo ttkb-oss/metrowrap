@@ -4,16 +4,20 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use encoding_rs::UTF_8;
 use object::Object;
 
 use metrowrap;
-use metrowrap::NamedString;
+use metrowrap::NamedSource;
 use metrowrap::SourceType;
 use metrowrap::assembler::Assembler;
 use metrowrap::compiler::Compiler;
 use metrowrap::elf::{Elf, Relocation, RelocationRecord, SHT_REL};
 use metrowrap::preprocessor::Preprocessor;
+use metrowrap::workspace::{TempMode, Workspace};
+
+fn workspace() -> Workspace {
+    Workspace::new(TempMode::Normal).expect("workspace")
+}
 
 /// Helper to create test compiler
 fn create_test_compiler() -> Compiler {
@@ -58,10 +62,9 @@ fn test_local_symbols_insertion_count() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/local_symbols.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -72,6 +75,7 @@ fn test_local_symbols_insertion_count() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -94,10 +98,9 @@ fn test_relocation_offset_correctness() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -108,6 +111,7 @@ fn test_relocation_offset_correctness() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -162,10 +166,9 @@ fn test_new_relocation_sections_added() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -176,6 +179,7 @@ fn test_new_relocation_sections_added() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -216,10 +220,9 @@ fn test_symbol_index_updates() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -230,6 +233,7 @@ fn test_symbol_index_updates() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -269,10 +273,9 @@ fn test_relocation_sh_info_correctness() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -283,6 +286,7 @@ fn test_relocation_sh_info_correctness() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -326,10 +330,9 @@ fn test_global_symbols_from_assembly_added() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -340,6 +343,7 @@ fn test_global_symbols_from_assembly_added() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -378,10 +382,9 @@ fn test_single_rodata_no_splitting() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/single_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -392,6 +395,7 @@ fn test_single_rodata_no_splitting() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -424,10 +428,9 @@ fn test_rodata_indexes_cleared_per_file() {
 
     for (i, c_file) in test_files.iter().enumerate() {
         let c_path = PathBuf::from(c_file);
-        let c_content = NamedString {
+        let c_content = NamedSource {
             source: SourceType::Path(c_path.display().to_string()),
-            content: std::fs::read_to_string(&c_path).unwrap(),
-            encoding: UTF_8,
+            content: std::fs::read(&c_path).unwrap(),
             src_dir: PathBuf::from("tests/data"),
         };
 
@@ -442,6 +445,7 @@ fn test_rodata_indexes_cleared_per_file() {
             &preprocessor,
             &compiler,
             &assembler,
+            &workspace(),
         );
 
         assert!(
@@ -461,10 +465,9 @@ fn test_relocation_data_packing() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -475,6 +478,7 @@ fn test_relocation_data_packing() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -520,10 +524,9 @@ fn test_complete_pipeline_integration() {
     let assembler = create_test_assembler();
 
     let c_path = PathBuf::from("tests/data/multi_rodata.c");
-    let c_content = NamedString {
+    let c_content = NamedSource {
         source: SourceType::Path(c_path.display().to_string()),
-        content: std::fs::read_to_string(&c_path).unwrap(),
-        encoding: UTF_8,
+        content: std::fs::read(&c_path).unwrap(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -536,6 +539,7 @@ fn test_complete_pipeline_integration() {
         &preprocessor,
         &compiler,
         &assembler,
+        &workspace(),
     );
 
     assert!(result.is_ok(), "Pipeline failed: {:?}", result.err());

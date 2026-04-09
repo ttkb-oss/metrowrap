@@ -18,6 +18,24 @@ all: $(PRIVATE)
 dist:
 	cargo package --workspace --allow-dirty
 
+.PHONY: archive
+archive: archive.tar.zst
+archive.tar.zst: README.md CHANGELOG.md Cargo.toml $(shell find src -name "*.rs") $(shell find man -type f)
+	tar --zstd -cvf $@ \
+        README.md \
+        CHANGELOG.md \
+        Cargo.toml \
+        docs \
+        man \
+        src \
+        tests
+
+.PHONY: clean
+clean:
+	cargo clean
+
+.PHONY: check
+check: test
 
 $(PRIVATE):
 	mkdir -p $@
@@ -208,15 +226,14 @@ sotn-mwccgap:
 sotn-mw:
 	cargo build --release
 	cd ../sotn-decomp; \
-    VERSION=pspeu tools/sotn_str/target/release/sotn_str process -p -f src/main_psp/31178.c | \
-    ~/.cargo/bin/flamegraph -o ../metrowrap/31178.c.svg -- time ../metrowrap/target/release/mw \
-        -o ../metrowrap/31178.c.mw.o \
+    VERSION=pspeu tools/sotn_str/target/release/sotn_str process -p -f src/main_psp/36174.c | \
+    ~/.cargo/bin/flamegraph -o ../metrowrap/36174.c.svg -- time ../metrowrap/target/release/mw \
+        -o ../metrowrap/36174.c.mw.o \
         --src-dir src/main_psp \
         --mwcc-path bin/mwccpsp.exe \
         --use-wibo --wibo-path bin/wibo \
         --as-path tools/pspas/target/release/pspas \
         --asm-dir asm/pspeu \
-        --target-encoding utf-8 \
         --macro-inc-path include/macro.inc \
         -gccdep \
         -MMD \
