@@ -42,11 +42,12 @@ impl Assembler {
         .arg(temp_o.path().to_str().unwrap())
         .args(&self.as_flags);
 
-        if let Some(inc) = &self.macro_inc_path
-            && let Some(parent) = inc.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            cmd.arg(format!("-I{}", parent.display()));
+        if let Some(inc) = &self.macro_inc_path {
+            if let Some(parent) = inc.parent() {
+                if !parent.as_os_str().is_empty() {
+                    cmd.arg(format!("-I{}", parent.display()));
+                }
+            }
         }
 
         cmd.stdin(Stdio::piped())
