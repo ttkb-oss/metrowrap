@@ -76,6 +76,7 @@ fn test_local_symbols_insertion_count() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -112,6 +113,7 @@ fn test_relocation_offset_correctness() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -180,6 +182,7 @@ fn test_new_relocation_sections_added() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -234,6 +237,7 @@ fn test_symbol_index_updates() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -287,6 +291,7 @@ fn test_relocation_sh_info_correctness() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -344,6 +349,7 @@ fn test_global_symbols_from_assembly_added() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -396,6 +402,7 @@ fn test_single_rodata_no_splitting() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -446,6 +453,7 @@ fn test_rodata_indexes_cleared_per_file() {
             &compiler,
             &assembler,
             &workspace(),
+            false,
         );
 
         assert!(
@@ -479,6 +487,7 @@ fn test_relocation_data_packing() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Failed to process file: {:?}", result.err());
@@ -540,6 +549,7 @@ fn test_complete_pipeline_integration() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(result.is_ok(), "Pipeline failed: {:?}", result.err());

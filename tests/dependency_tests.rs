@@ -69,6 +69,7 @@ fn run(output: &PathBuf, extra_flags: &[&str]) {
         &make_compiler(extra_flags),
         &make_assembler(),
         &workspace(),
+        false,
     )
     .expect("process_c_file");
 }

@@ -64,6 +64,7 @@ fn test_process_c_file() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     );
 
     assert!(matches!(result, Ok(())), "this is not ok: {result:?}");
@@ -107,6 +108,7 @@ fn test_process_c_file_no_include_asm() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     )
     .expect("process_c_file");
 
@@ -219,6 +221,7 @@ fn test_process_c_file_conditional_include_asm_no_include() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     )
     .expect("process_c_file");
 
@@ -352,6 +355,7 @@ fn test_process_c_file_conditional_include_asm_yes_include() {
         &compiler,
         &assembler,
         &workspace(),
+        false,
     )
     .expect("process_c_file");
 
@@ -438,6 +442,79 @@ fn test_process_c_file_conditional_include_asm_yes_include() {
 
     //  [ 6] .mwcats           LOUSER+0x4a2a82 00000000 000120 000008 00      5   0  4
     //  [ 7] .rel.mwcats       REL             00000000 000130 000008 08      1   6  0
+}
+
+#[test]
+fn test_process_c_file_skip_asm() {
+    let preprocessor = Arc::new(preprocessor::Preprocessor {
+        asm_dir_prefix: Some(PathBuf::from(".")),
+    });
+
+    let c_flags: Vec<String> = vec![
+        "-Itests/data".to_string(),
+        "-c".to_string(),
+        "-lang".to_string(),
+        "c".to_string(),
+        "-sdatathreshold".to_string(),
+        "0".to_string(),
+        "-char".to_string(),
+        "unsigned".to_string(),
+        "-fl".to_string(),
+        "divbyzerocheck".to_string(),
+        "-opt".to_string(),
+        "nointrinsics".to_string(),
+    ];
+    let compiler = compiler::Compiler::new(
+        c_flags,
+        "target/.private/bin/mwccpsp.exe".into(),
+        true,
+        "target/.private/bin/wibo".into(),
+    );
+
+    let assembler = assembler::Assembler {
+        as_path: "mipsel-linux-gnu-as".into(),
+        as_march: "allegrex".into(),
+        as_mabi: "32".into(),
+        as_flags: vec!["-G0".into()],
+        macro_inc_path: Some("tests/data/macro.inc".into()),
+    };
+
+    let c_path = PathBuf::from("tests/data/assembler.c");
+    let c_content = NamedSource {
+        source: SourceType::Path(c_path.display().to_string()),
+        content: std::fs::read(&c_path).unwrap(),
+        src_dir: PathBuf::from("tests/data"),
+    };
+
+    let output =
+        PathBuf::from("target/.private/tests/metrowrap/process_c_file/assembler-skip-asm.o");
+
+    let _result = metrowrap::process_c_file(
+        &c_content,
+        &output,
+        &preprocessor,
+        &compiler,
+        &assembler,
+        &workspace(),
+        true,
+    )
+    .expect("process_c_file");
+
+    let obj_bytes = std::fs::read(&output).expect("assembler-skip-asm.o");
+    let obj = object::File::parse(&*obj_bytes).expect("no object");
+
+    let text_section = obj
+        .sections()
+        .find(|s| matches!(s.kind(), SectionKind::Text))
+        .expect("text section");
+
+    // skip_asm writes the stub's NOP-filled placeholder rather than the real assembly
+    let text_data = text_section.data().unwrap();
+    assert_eq!(16, text_data.len());
+    assert!(
+        text_data.iter().all(|&b| b == 0),
+        "text section should be all-zero NOPs, got: {text_data:?}"
+    );
 }
 
 #[test]

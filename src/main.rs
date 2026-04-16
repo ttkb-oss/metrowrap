@@ -69,6 +69,10 @@ struct Args {
     #[arg(long, hide = true)]
     target_encoding: Option<String>,
 
+    /// compile INCLUDE_ASM funcs as NOP stubs, useful for progress reporting
+    #[arg(long)]
+    skip_asm: bool,
+
     /// Keep temp files on failure for debugging.
     ///
     /// Without a value: writes files to the system temp dir and leaves them
@@ -175,6 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &compiler,
         &assembler,
         &workspace,
+        args.skip_asm,
     ) {
         eprintln!("failed to process c file: {:?}", e);
         workspace.on_failure();
