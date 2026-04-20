@@ -119,6 +119,7 @@ pub fn process_c_file(
     compiler: &Compiler,
     assembler: &Assembler,
     workspace: &Workspace,
+    skip_asm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws = workspace.path();
 
@@ -203,6 +204,11 @@ pub fn process_c_file(
         .iter()
         .map(|sym| (sym.name.clone(), sym.st_shndx))
         .collect();
+
+    if skip_asm {
+        write_dependency_file(compiler, make_rule, c_content, o_file)?;
+        return write_obj(o_file, &compiled_elf.pack());
+    }
 
     for mut asm_object /*(asm_file, main_symbol, rodata_syms, mut assembled_elf)*/ in asm_objects {
         let num_rodata_symbols = asm_object.all_symbols.len();

@@ -99,6 +99,7 @@ fn test_relocation_offset_equals_section_size() {
         &compiler,
         &assembler,
         &ws,
+        false,
     );
 
     assert!(result.is_ok());
@@ -271,6 +272,7 @@ fn test_only_rodata() {
         &compiler,
         &assembler,
         &ws,
+        false,
     );
 
     assert!(
@@ -333,6 +335,7 @@ fn test_sequential_file_processing() {
             &compiler,
             &assembler,
             &ws,
+            false,
         );
 
         assert!(
@@ -395,6 +398,7 @@ fn test_sh_info_bounds_checking() {
         &compiler,
         &assembler,
         &ws,
+        false,
     );
 
     assert!(result.is_ok());
@@ -465,6 +469,7 @@ fn test_identical_rodata_content() {
         &compiler,
         &assembler,
         &ws,
+        false,
     );
 
     assert!(result.is_ok());
