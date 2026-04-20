@@ -336,7 +336,7 @@ impl Elf {
 
         self.sections
             .iter()
-            .filter(|s| s.name == ".text")
+            .filter(|s| s.name == ".text" || s.name.starts_with(".text"))
             .enumerate()
             .map(|(i, s)| {
                 let mut text = TextSection::from_section(s.clone());
@@ -354,7 +354,7 @@ impl Elf {
         self.sections
             .iter()
             .enumerate()
-            .filter(|(_, section)| section.name == ".text")
+            .filter(|(_, section)| section.name == ".text" || section.name.starts_with(".text."))
             .enumerate()
             .filter(|(f, _)| name == function_names[*f])
             .map(|(_, (i, _))| i)
@@ -365,7 +365,7 @@ impl Elf {
     pub fn rodata_sections(&self) -> Vec<&Section> {
         self.sections
             .iter()
-            .filter(|s| s.name == ".rodata")
+            .filter(|s| s.name == ".rodata" || s.name.starts_with(".rodata."))
             .collect()
     }
 
