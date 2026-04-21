@@ -1,3 +1,16 @@
+0.2.1
+=====
+
+### Added
+
+* Add --skip-asm param to stub INCLUDE_ASM with NOPs
+
+### Changed
+
+* Assembler parallelization is lighter-weight
+* C source parsing no longer uses regexes
+* Fewer external dependencies
+
 0.2.0
 =====
 
