@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: © 2026 TTKB, LLC
 // SPDX-License-Identifier: BSD-3-CLAUSE
-use byteorder::{LittleEndian, WriteBytesExt};
 use std::cmp::max;
 use std::io::{Cursor, Read, Write};
 
@@ -221,28 +220,26 @@ impl Elf {
         header_cursor.write_all(&h.ident).unwrap();
         header_cursor.write_all(&h.e_type.to_le_bytes()).unwrap();
         header_cursor.write_all(&h.e_machine.to_le_bytes()).unwrap();
+        header_cursor.write_all(&h.e_version.to_le_bytes()).unwrap();
+        header_cursor.write_all(&h.e_entry.to_le_bytes()).unwrap();
+        header_cursor.write_all(&h.e_phoff.to_le_bytes()).unwrap();
         header_cursor
-            .write_u32::<LittleEndian>(h.e_version)
-            .unwrap();
-        header_cursor.write_u32::<LittleEndian>(h.e_entry).unwrap();
-        header_cursor.write_u32::<LittleEndian>(h.e_phoff).unwrap();
-        header_cursor
-            .write_u32::<LittleEndian>(elf_header_size + section_data.len() as u32)
+            .write_all(&(elf_header_size + section_data.len() as u32).to_le_bytes())
             .unwrap(); // e_shoff
-        header_cursor.write_u32::<LittleEndian>(h.e_flags).unwrap();
-        header_cursor.write_u16::<LittleEndian>(h.e_ehsize).unwrap();
+        header_cursor.write_all(&h.e_flags.to_le_bytes()).unwrap();
+        header_cursor.write_all(&h.e_ehsize.to_le_bytes()).unwrap();
         header_cursor
-            .write_u16::<LittleEndian>(h.e_phentsize)
+            .write_all(&h.e_phentsize.to_le_bytes())
             .unwrap();
-        header_cursor.write_u16::<LittleEndian>(h.e_phnum).unwrap();
+        header_cursor.write_all(&h.e_phnum.to_le_bytes()).unwrap();
         header_cursor
-            .write_u16::<LittleEndian>(h.e_shentsize)
+            .write_all(&h.e_shentsize.to_le_bytes())
             .unwrap();
         header_cursor
-            .write_u16::<LittleEndian>(self.sections.len() as u16)
+            .write_all(&(self.sections.len() as u16).to_le_bytes())
             .unwrap(); // e_shnum
         header_cursor
-            .write_u16::<LittleEndian>(h.e_shstrndx)
+            .write_all(&h.e_shstrndx.to_le_bytes())
             .unwrap();
         out.extend([0u8; 0xC]);
 

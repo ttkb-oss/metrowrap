@@ -14,10 +14,8 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::LazyLock;
 
-use rayon::prelude::*;
 use tempfile::Builder;
 
 use crate::assembler::Assembler;
@@ -105,9 +103,9 @@ fn rodata_symbols_from_elf(elf: &Elf) -> Vec<(String, usize, bool)> {
         .collect()
 }
 
-struct ASMObject {
+struct ASMObject<'a> {
     path: PathBuf,
-    main_symbol: String,
+    main_symbol: &'a str,
     all_symbols: Vec<(String, usize, bool)>,
     elf: Elf,
 }
@@ -115,7 +113,7 @@ struct ASMObject {
 pub fn process_c_file(
     c_content: &NamedSource,
     o_file: &Path,
-    preprocessor: &Arc<Preprocessor>,
+    preprocessor: &Preprocessor,
     compiler: &Compiler,
     assembler: &Assembler,
     workspace: &Workspace,
@@ -137,25 +135,35 @@ pub fn process_c_file(
         return write_obj(o_file, &obj_bytes);
     }
 
-    // 2. Assemble all .s files in parallel and extract rodata symbol info from
-    //    each assembled ELF. This is the sole source of truth for symbol names,
-    //    sizes, and locality - no .s source parsing occurs.
-    let asm_objects: Vec<ASMObject> = asm_refs
-        .par_iter()
-        .map(|(asm_file, func_name)| {
-            let assembled_bytes = assembler
-                .assemble_file(asm_file, ws)
-                .expect("assembled bytes");
+    let jobs: usize = 4;
+
+    // 2. Assemble all .s files by spawning assembler processes in chunks of
+    //    `jobs` at a time. Each chunk runs concurrently at the OS level; we
+    //    collect results before spawning the next chunk.
+    let mut asm_objects: Vec<ASMObject> = Vec::with_capacity(asm_refs.len());
+    for chunk in asm_refs.chunks(jobs.max(1)) {
+        let spawned: Vec<_> = chunk
+            .iter()
+            .map(|(asm_file, _)| {
+                assembler
+                    .spawn_file(asm_file, ws)
+                    .inspect_err(|_err| eprintln!("Failed to assemble {}", asm_file.display()))
+                    .expect("spawned assembly")
+            })
+            .collect();
+
+        for (spawned_asm, (asm_file, func_name)) in spawned.into_iter().zip(chunk) {
+            let assembled_bytes = spawned_asm.collect().expect("assembled bytes");
             let elf = Elf::from_bytes(&assembled_bytes);
             let rodata_syms = rodata_symbols_from_elf(&elf);
-            ASMObject {
+            asm_objects.push(ASMObject {
                 path: asm_file.clone(),
-                main_symbol: func_name.clone(),
+                main_symbol: func_name,
                 all_symbols: rodata_syms,
                 elf,
-            }
-        })
-        .collect();
+            });
+        }
+    }
 
     // 3. Build the stub C source by interleaving the original content segments
     //    with the generated stubs. Each stub is derived entirely from the
@@ -174,7 +182,7 @@ pub fn process_c_file(
             .map(|f| f.section.data.len())
             .unwrap_or(0);
         temp_c.write_all(&Preprocessor::stub_for(
-            &asm_object.main_symbol,
+            asm_object.main_symbol,
             text_byte_count,
             &asm_object.all_symbols,
         ))?;
@@ -230,7 +238,7 @@ pub fn process_c_file(
         let asm_text = &asm_text_owned;
 
         // if this is a function and that function is not an INCLUDE_ASM, ignore
-        if !asm_text.is_empty() && !stub_functions.contains(&asm_object.main_symbol) {
+        if !asm_text.is_empty() && !stub_functions.contains(asm_object.main_symbol) {
             continue;
         }
 
@@ -238,7 +246,7 @@ pub fn process_c_file(
         let mut text_section_index: usize = 0xFFFFFFFF;
 
         if !asm_text.is_empty() {
-            text_section_index = compiled_elf.text_section_by_name(&asm_object.main_symbol);
+            text_section_index = compiled_elf.text_section_by_name(asm_object.main_symbol);
 
             // assumption is that .rodata will immediately follow the .text section
             if num_rodata_symbols > 0 {
@@ -276,7 +284,7 @@ pub fn process_c_file(
         } else {
             // this file only contains rodata
             assert_eq!(1, num_rodata_symbols);
-            let idx = symbol_to_section_idx[&asm_object.main_symbol];
+            let idx = symbol_to_section_idx[asm_object.main_symbol];
             rodata_section_indices.push(idx.into());
         }
 

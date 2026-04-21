@@ -1,7 +1,5 @@
 // tests/rodata_edge_cases_tests.rs
 // Edge case and error condition tests for rodata relocation splitting
-use std::sync::Arc;
-
 use metrowrap;
 use metrowrap::NamedSource;
 use metrowrap::SourceType;
@@ -45,10 +43,8 @@ fn create_test_assembler() -> Assembler {
 }
 
 /// Helper to create test preprocessor
-fn create_test_preprocessor() -> Arc<Preprocessor> {
-    Arc::new(Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    })
+fn create_test_preprocessor() -> Preprocessor {
+    Preprocessor::new(Some(PathBuf::from(".")))
 }
 
 /// Test: Relocation at exact section boundary

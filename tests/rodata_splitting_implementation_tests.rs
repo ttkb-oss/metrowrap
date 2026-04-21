@@ -2,7 +2,6 @@
 // Specific tests for the newly implemented rodata relocation splitting logic
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use object::Object;
 
@@ -48,10 +47,8 @@ fn create_test_assembler() -> Assembler {
 }
 
 /// Helper to create test preprocessor
-fn create_test_preprocessor() -> Arc<Preprocessor> {
-    Arc::new(Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    })
+fn create_test_preprocessor() -> Preprocessor {
+    Preprocessor::new(Some(PathBuf::from(".")))
 }
 
 /// Test 1: Verify that local_syms_inserted is correctly counted

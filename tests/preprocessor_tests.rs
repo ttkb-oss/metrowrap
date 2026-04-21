@@ -6,9 +6,7 @@ use metrowrap::preprocessor;
 
 #[test]
 fn test_no_include_asm() {
-    let preprocessor = preprocessor::Preprocessor {
-        asm_dir_prefix: None,
-    };
+    let preprocessor = preprocessor::Preprocessor::new(None);
 
     let content = std::fs::read("tests/data/compiler.c").unwrap();
     let (segments, asm_refs) = preprocessor.find_macro_refs(&content);
@@ -21,19 +19,14 @@ fn test_no_include_asm() {
 
 #[test]
 fn test_include_one_asm() {
-    let preprocessor = preprocessor::Preprocessor {
-        asm_dir_prefix: None,
-    };
+    let preprocessor = preprocessor::Preprocessor::new(None);
 
     let content = std::fs::read("tests/data/assembler.c").unwrap();
     let (segments, asm_refs) = preprocessor.find_macro_refs(&content);
 
     assert_eq!(1, asm_refs.len());
     assert_eq!(2, segments.len());
-    assert_eq!(
-        (PathBuf::from("tests/data/Add.s"), "Add".to_string()),
-        asm_refs[0]
-    );
+    assert_eq!((PathBuf::from("tests/data/Add.s"), "Add"), asm_refs[0]);
 
     // Whitespace variants must resolve to the same path and func_name.
     let content_ws =

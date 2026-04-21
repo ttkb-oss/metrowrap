@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use metrowrap;
 use metrowrap::NamedSource;
@@ -17,9 +16,7 @@ fn workspace() -> Workspace {
 
 #[test]
 fn test_process_c_file() {
-    let preprocessor = Arc::new(preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    });
+    let preprocessor = preprocessor::Preprocessor::new(Some(PathBuf::from(".")));
 
     let c_flags: Vec<String> = vec![
         "-Itests/data".to_string(),
@@ -74,9 +71,7 @@ fn test_process_c_file() {
 
 #[test]
 fn test_process_c_file_no_include_asm() {
-    let preprocessor = Arc::new(preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    });
+    let preprocessor = preprocessor::Preprocessor::new(Some(PathBuf::from(".")));
 
     let c_flags: Vec<String> = vec!["-Itests/data".to_string(), "-c".to_string()];
     let compiler = compiler::Compiler::new(
@@ -185,9 +180,7 @@ fn test_process_c_file_no_include_asm() {
 
 #[test]
 fn test_process_c_file_conditional_include_asm_no_include() {
-    let preprocessor = Arc::new(preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    });
+    let preprocessor = preprocessor::Preprocessor::new(Some(PathBuf::from(".")));
 
     let c_flags: Vec<String> = vec!["-Itests/data".to_string(), "-c".to_string()];
     let compiler = compiler::Compiler::new(
@@ -314,9 +307,7 @@ fn test_process_c_file_conditional_include_asm_no_include() {
 
 #[test]
 fn test_process_c_file_conditional_include_asm_yes_include() {
-    let preprocessor = Arc::new(preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    });
+    let preprocessor = preprocessor::Preprocessor::new(Some(PathBuf::from(".")));
 
     // anable the INCLUDE_ASM line
     let c_flags: Vec<String> = vec![
@@ -446,9 +437,7 @@ fn test_process_c_file_conditional_include_asm_yes_include() {
 
 #[test]
 fn test_process_c_file_skip_asm() {
-    let preprocessor = Arc::new(preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    });
+    let preprocessor = preprocessor::Preprocessor::new(Some(PathBuf::from(".")));
 
     let c_flags: Vec<String> = vec![
         "-Itests/data".to_string(),
@@ -519,9 +508,7 @@ fn test_process_c_file_skip_asm() {
 
 #[test]
 fn test_rewritten_c_file() {
-    let preprocessor = preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    };
+    let preprocessor = preprocessor::Preprocessor::new(Some(PathBuf::from(".")));
 
     let c_flags: Vec<String> = vec!["-Itests/data".to_string(), "-c".to_string()];
     let compiler = compiler::Compiler::new(

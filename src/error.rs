@@ -19,9 +19,6 @@ pub enum MWError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Regex error: {0}")]
-    Regex(#[from] regex::Error),
-
     #[error("Internal error: {0}")]
     Internal(&'static str),
 }

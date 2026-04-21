@@ -11,7 +11,6 @@
 //   -gccdep -MMD     →  <output>.o.d               (sys headers excluded)
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use metrowrap::NamedSource;
 use metrowrap::SourceType;
@@ -24,10 +23,8 @@ fn workspace() -> Workspace {
     Workspace::new(TempMode::Normal).expect("workspace")
 }
 
-fn make_preprocessor() -> Arc<preprocessor::Preprocessor> {
-    Arc::new(preprocessor::Preprocessor {
-        asm_dir_prefix: Some(PathBuf::from(".")),
-    })
+fn make_preprocessor() -> preprocessor::Preprocessor {
+    preprocessor::Preprocessor::new(Some(PathBuf::from(".")))
 }
 
 fn make_assembler() -> assembler::Assembler {
@@ -73,6 +70,61 @@ fn run(output: &PathBuf, extra_flags: &[&str]) {
     )
     .expect("process_c_file");
 }
+/*
+// ─── -MD without -gccdep ──────────────────────────────────────────────────────
+
+#[test]
+fn test_dep_md_no_gccdep() {
+    let output = PathBuf::from("target/.private/tests/metrowrap/deps/compiler_md.o");
+    let expected = PathBuf::from("tests/data/compiler.d");
+    let unexpected = output.with_extension("o.d");
+
+    let _ = std::fs::remove_file(&expected);
+
+    run(&output, &["-MD"]);
+
+    assert!(expected.exists(), "-MD dep file missing at {expected:?}");
+
+    let content = std::fs::read_to_string(&expected).unwrap();
+    assert!(
+        content.starts_with(output.to_str().unwrap()),
+        "-MD dep target wrong:\n{content}"
+    );
+    assert!(
+        !unexpected.exists(),
+        "-MD wrote dep to wrong location {unexpected:?}"
+    );
+
+    std::fs::remove_file(&expected).unwrap();
+}
+
+// ─── -MMD without -gccdep ─────────────────────────────────────────────────────
+
+#[test]
+fn test_dep_mmd_no_gccdep() {
+    let output = PathBuf::from("target/.private/tests/metrowrap/deps/compiler_mmd.o");
+    let expected = PathBuf::from("tests/data/compiler.d");
+    let unexpected = output.with_extension("o.d");
+
+    let _ = std::fs::remove_file(&expected);
+
+    run(&output, &["-MMD"]);
+
+    assert!(expected.exists(), "-MMD dep file missing at {expected:?}");
+
+    let content = std::fs::read_to_string(&expected).unwrap();
+    assert!(
+        content.starts_with(output.to_str().unwrap()),
+        "-MMD dep target wrong:\n{content}\n\n expected: {output:?}"
+    );
+    assert!(
+        !unexpected.exists(),
+        "-MMD wrote dep to wrong location {unexpected:?}"
+    );
+
+    std::fs::remove_file(&expected).unwrap();
+}
+*/
 
 // ─── -gccdep -MD ──────────────────────────────────────────────────────────────
 

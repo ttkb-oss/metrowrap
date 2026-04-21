@@ -65,61 +65,33 @@ impl MakeRule {
 }
 
 pub fn path_from_wibo(path_str: &str) -> PathBuf {
-    let mut path_str = path_str.replace('\\', "/");
-    if path_str.starts_with("//?/") {
-        path_str = path_str[4..].to_string();
-    }
-    if path_str.to_lowercase().starts_with("z:/") {
-        path_str = path_str[2..].to_string();
-    }
-
-    let path = PathBuf::from(&path_str);
+    let normalized = normalize_wibo_prefix(path_str);
+    let path = PathBuf::from(&normalized);
     if path.is_file() {
         return path;
     }
+    resolve_actual_path(&path)
+}
 
+fn normalize_wibo_prefix(path_str: &str) -> String {
+    let mut normalized = path_str.replace('\\', "/");
+    if normalized.starts_with("//?/") {
+        normalized = normalized[4..].to_string();
+    }
+    if normalized.to_lowercase().starts_with("z:/") {
+        normalized = normalized[2..].to_string();
+    }
+    normalized
+}
+
+fn resolve_actual_path(path: &Path) -> PathBuf {
     let mut resolved_path = PathBuf::new();
-
     for component in path.components() {
         match component {
-            Component::RootDir => {
-                resolved_path.push("/");
-            }
+            Component::RootDir => resolved_path.push("/"),
             Component::Normal(os_name) => {
-                let name_to_find = os_name.to_string_lossy().to_lowercase();
-                let mut found_exact = false;
-
-                // First, check if the exact component exists in the current path
-                let exact_candidate = resolved_path.join(os_name);
-                if exact_candidate.exists() {
-                    resolved_path.push(os_name);
-                    found_exact = true;
-                } else {
-                    // Search the directory for a case-insensitive match
-                    let search_dir = if resolved_path.as_os_str().is_empty() {
-                        Path::new(".")
-                    } else {
-                        resolved_path.as_path()
-                    };
-
-                    if let Ok(entries) = fs::read_dir(search_dir) {
-                        for entry in entries.flatten() {
-                            if let Some(entry_name_str) = entry.file_name().to_str() {
-                                if entry_name_str.to_lowercase() == name_to_find {
-                                    resolved_path.push(entry.file_name());
-                                    found_exact = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // If no match found, push the original name and hope for the best
-                // (it might be a file that hasn't been created yet)
-                if !found_exact {
-                    resolved_path.push(os_name);
-                }
+                let actual_name = resolve_component(&resolved_path, os_name.to_str().unwrap_or(""));
+                resolved_path.push(actual_name);
             }
             Component::CurDir => {}
             Component::ParentDir => {
@@ -130,8 +102,35 @@ pub fn path_from_wibo(path_str: &str) -> PathBuf {
             }
         }
     }
-
     resolved_path
+}
+
+fn resolve_component(base: &Path, name: &str) -> String {
+    let exact_candidate = base.join(name);
+    if exact_candidate.exists() {
+        return name.to_string();
+    }
+
+    let search_dir = if base.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        base
+    };
+
+    let name_to_find = name.to_lowercase();
+    if let Ok(entries) = fs::read_dir(search_dir) {
+        for entry in entries.flatten() {
+            if let Some(entry_name_str) = entry.file_name().to_str() {
+                if entry_name_str.to_lowercase() == name_to_find {
+                    return entry_name_str.to_string();
+                }
+            }
+        }
+    }
+
+    // If no match found, use the original name and hope for the best
+    // (it might be a file that hasn't been created yet)
+    name.to_string()
 }
 
 #[cfg(test)]
@@ -220,6 +219,56 @@ mod tests {
         assert_eq!(
             path_from_wibo("relative\\path.h"),
             PathBuf::from("relative/path.h")
+        );
+    }
+
+    #[test]
+    fn test_path_from_wibo_case_insensitive() {
+        // "src/makerule.rs" exists. Let's ask for "sRc/MaKeRule.RS"
+        let path = path_from_wibo("sRc/MaKeRule.RS");
+        // Because resolve_component searches the directory case-insensitively,
+        // it should find "src" and then "makerule.rs" if they exist.
+        // During tests, src/makerule.rs exists relative to cargo workspace.
+        // However, on Mac/Windows, the OS is case-insensitive, so it matches early
+        // and returns the original string. We verify it didn't crash.
+        assert!(path.to_string_lossy().contains("akerule"));
+
+        // If something completely non-existent is provided
+        let bad_path = path_from_wibo("nOnExiStEnT/fIlE.c");
+        assert_eq!(bad_path, PathBuf::from("nOnExiStEnT/fIlE.c"));
+    }
+
+    #[test]
+    fn test_path_from_wibo_curdir() {
+        // Test handling of '.' Component::CurDir
+        let path = path_from_wibo("./src/./makerule.rs");
+        // path.is_file() triggers true on test systems directly
+        assert_eq!(path, PathBuf::from("./src/./makerule.rs"));
+    }
+
+    #[test]
+    fn test_path_from_wibo_parentdir() {
+        // Test handling of '..' Component::ParentDir
+        let path = path_from_wibo("src/../src/makerule.rs");
+        // Depending on existing files, this might resolve directly.
+        assert_eq!(path, PathBuf::from("src/../src/makerule.rs"));
+    }
+
+    #[test]
+    fn test_path_from_wibo_prefix() {
+        // Component::Prefix is often captured by PathBuf on Windows when using C:
+        // On Unix, it evaluates differently, but we shouldn't crash.
+        let path = path_from_wibo("C:\\Test\\path");
+        // Windows Prefix handling in components
+        // "C:\Test\path" will have a prefix component on Windows, but on Mac/Linux
+        // it will just be Component::Normal("C:").
+        // To trigger a Prefix component reliably on Unix in `Path`, we can't easily,
+        // but we ensure the code doesn't crash given Windows input formatting.
+        assert!(
+            path.to_string_lossy()
+                .to_string()
+                .to_lowercase()
+                .contains("test")
         );
     }
 }
