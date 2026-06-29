@@ -131,9 +131,11 @@ pub fn process_c_file(
         let (obj_bytes, make_rule) = c_content.with_tmp(ws, |c_file| {
             Ok(compiler.compile_file(c_file, c_content.source.name(), ws)?)
         })?;
-        write_dependency_file(compiler, make_rule, c_content, o_file)?;
+        write_dependency_file(compiler, make_rule, c_content, o_file, &[])?;
         return write_obj(o_file, &obj_bytes);
     }
+
+    let asm_paths: Vec<&Path> = asm_refs.iter().map(|(p, _)| p as &Path).collect();
 
     let jobs: usize = 4;
 
@@ -142,18 +144,13 @@ pub fn process_c_file(
     //    collect results before spawning the next chunk.
     let mut asm_objects: Vec<ASMObject> = Vec::with_capacity(asm_refs.len());
     for chunk in asm_refs.chunks(jobs.max(1)) {
-        let spawned: Vec<_> = chunk
-            .iter()
-            .map(|(asm_file, _)| {
-                assembler
-                    .spawn_file(asm_file, ws)
-                    .inspect_err(|_err| eprintln!("Failed to assemble {}", asm_file.display()))
-                    .expect("spawned assembly")
-            })
-            .collect();
+        let mut spawned_vec = Vec::with_capacity(chunk.len());
+        for (asm_file, _) in chunk {
+            spawned_vec.push(assembler.spawn_file(asm_file, ws)?);
+        }
 
-        for (spawned_asm, (asm_file, func_name)) in spawned.into_iter().zip(chunk) {
-            let assembled_bytes = spawned_asm.collect().expect("assembled bytes");
+        for (mut spawned_asm, (asm_file, func_name)) in spawned_vec.into_iter().zip(chunk) {
+            let assembled_bytes = spawned_asm.collect()?;
             let elf = Elf::from_bytes(&assembled_bytes);
             let rodata_syms = rodata_symbols_from_elf(&elf);
             asm_objects.push(ASMObject {
@@ -214,7 +211,7 @@ pub fn process_c_file(
         .collect();
 
     if skip_asm {
-        write_dependency_file(compiler, make_rule, c_content, o_file)?;
+        write_dependency_file(compiler, make_rule, c_content, o_file, &asm_paths)?;
         return write_obj(o_file, &compiled_elf.pack());
     }
 
@@ -250,15 +247,14 @@ pub fn process_c_file(
 
             // assumption is that .rodata will immediately follow the .text section
             if num_rodata_symbols > 0 {
-                let mut i = text_section_index + 1;
-                for section in &compiled_elf.sections[i..] {
+                for i in (text_section_index + 1)..compiled_elf.sections.len() {
+                    let section = &compiled_elf.sections[i];
                     if section.name == ".rodata" {
                         rodata_section_indices.push(i);
                         if rodata_section_indices.len() == num_rodata_symbols {
                             break;
                         }
                     }
-                    i += 1;
                 }
             }
 
@@ -467,7 +463,7 @@ pub fn process_c_file(
         }
     }
 
-    write_dependency_file(compiler, make_rule, c_content, o_file)?;
+    write_dependency_file(compiler, make_rule, c_content, o_file, &asm_paths)?;
     write_obj(o_file, &compiled_elf.pack())?;
 
     Ok(())
@@ -494,6 +490,7 @@ fn write_dependency_file<P: AsRef<Path>>(
     make_rule: Option<MakeRule>,
     c_content: &NamedSource,
     o_file: P,
+    asm_paths: &[&Path],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(mut make_rule) = make_rule else {
         return Ok(());
@@ -529,6 +526,10 @@ fn write_dependency_file<P: AsRef<Path>>(
         // mw mode: write the .d file alongside the source .c file as <name>.d
         PathBuf::from(&c_content.source.name()).with_extension("d")
     };
+
+    for path in asm_paths {
+        make_rule.includes.push(path.to_string_lossy().into_owned());
+    }
 
     ensure_parent_dir(&d_file)?;
     std::fs::write(&d_file, make_rule.as_str().as_bytes())?;

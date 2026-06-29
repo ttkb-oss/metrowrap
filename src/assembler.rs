@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: BSD-3-CLAUSE
 use crate::error::MWError;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::io::Read;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -20,18 +22,46 @@ pub struct Assembler {
 pub struct SpawnedAssembly {
     child: Child,
     temp_o: NamedTempFile,
+    cli: String,
 }
 
 impl SpawnedAssembly {
     /// Waits for the assembler process to finish and reads the resulting
     /// object file bytes. This is the blocking half of the spawn/collect split.
-    pub fn collect(self) -> Result<Vec<u8>, MWError> {
-        let output = self.child.wait_with_output()?;
+    pub fn collect(&mut self) -> Result<Vec<u8>, MWError> {
+        let stdout_handle = {
+            let stdout = self.child.stdout.take().unwrap();
+            std::thread::spawn(move || -> std::io::Result<()> {
+                for line in BufReader::new(stdout).lines() {
+                    println!("{}", line?);
+                }
+                Ok(())
+            })
+        };
 
-        if !output.status.success() {
-            return Err(MWError::Assembler(
-                String::from_utf8_lossy(&output.stderr).into(),
-            ));
+        let stderr_handle = {
+            let stderr = self.child.stderr.take().unwrap();
+            std::thread::spawn(move || -> std::io::Result<String> {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                BufReader::new(stderr).read_to_end(&mut buf)?;
+                if !buf.is_empty() {
+                    let msg = String::from_utf8_lossy(&buf);
+                    eprint!("{}", msg);
+                    Ok(msg.into())
+                } else {
+                    Ok("".into())
+                }
+            })
+        };
+
+        let status = self.child.wait()?;
+        stdout_handle.join().unwrap()?;
+        let err = stderr_handle.join().unwrap()?;
+
+        if !status.success() {
+            eprintln!("assembler: {}", self.cli);
+            return Err(MWError::Assembler(err));
         }
 
         let mut obj_bytes = Vec::new();
@@ -64,7 +94,15 @@ impl Assembler {
         asm_filepath: P,
         workspace: &Path,
     ) -> Result<SpawnedAssembly, MWError> {
-        self.spawn_data(File::open(asm_filepath)?, workspace)
+        let path = asm_filepath.as_ref();
+        match File::open(path) {
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                eprintln!("mw: ASM file not found {}", path.display());
+                Err(MWError::AsmFileNotFound(path.to_path_buf()))
+            }
+            Err(e) => Err(MWError::Io(e)),
+            Ok(reader) => self.spawn_data(reader, workspace),
+        }
     }
 
     /// Spawns the assembler, pipes the given data to stdin, and returns
@@ -99,7 +137,27 @@ impl Assembler {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut process = cmd.spawn()?;
+        let cli = format!("{:?}", cmd);
+
+        let result = cmd.spawn();
+        if let Err(e) = result {
+            if e.kind() == ErrorKind::NotFound {
+                eprintln!(
+                    "Error: '{}' not be found. No such file or directory.",
+                    self.as_path
+                );
+            } else {
+                eprintln!("Failed to run program due to an OS error: {}", e);
+            }
+            return Err(MWError::ToolExecutionFailed {
+                program: self.as_path.clone(),
+                source: e,
+            });
+        };
+
+        // process is waiting is handled much asynchrnously
+        #[allow(clippy::zombie_processes)]
+        let mut process = result.unwrap();
         let mut stdin = process.stdin.take().unwrap();
 
         if let Some(include) = &self.macro_inc_path {
@@ -113,6 +171,7 @@ impl Assembler {
         Ok(SpawnedAssembly {
             child: process,
             temp_o,
+            cli,
         })
     }
 }

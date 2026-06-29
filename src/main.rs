@@ -231,7 +231,7 @@ pub fn run(mut args: Args) -> Result<(), Box<dyn Error>> {
         args.skip_asm,
     ) {
         workspace.on_failure();
-        return Err(format!("failed to process c file: {:?}", e).into());
+        return Err(format!("failed to process c file: {}", e).into());
     }
 
     Ok(())

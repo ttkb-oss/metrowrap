@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: © 2026 TTKB, LLC
 // SPDX-License-Identifier: BSD-3-CLAUSE
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,6 +16,16 @@ pub enum MWError {
 
     #[error("ELF manipulation error: {0}")]
     Elf(String),
+
+    #[error("Assembly file not found: {0}")]
+    AsmFileNotFound(PathBuf),
+
+    #[error("cannot execute '{program}': {source}")]
+    ToolExecutionFailed {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

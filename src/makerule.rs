@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Debug)]
 pub struct MakeRule {
     pub target: String,
     pub source: Option<String>,

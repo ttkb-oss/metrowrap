@@ -1,3 +1,12 @@
+0.2.2
+=====
+
+### Changed
+
+* Improved error messages when the assembler or ASM files cannot be found.
+* ASM files are now included in dependency file output
+
+
 0.2.1
 =====
 
