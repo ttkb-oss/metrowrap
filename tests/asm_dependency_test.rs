@@ -44,7 +44,8 @@ fn test_dep_asm_include() {
     // In gcc mode, it goes to <output>.o.d
     let c_content = NamedSource {
         source: SourceType::Path("tests/data/asm_test.c".to_string()),
-        content: b"INCLUDE_ASM(\"tests/data\", Add);".to_vec(),
+        content: b"INCLUDE_ASM(\"tests/data\", Add);\nINCLUDE_RODATA(\"tests/data\", OnlyRodata);"
+            .to_vec(),
         src_dir: PathBuf::from("tests/data"),
     };
 
@@ -76,6 +77,11 @@ fn test_dep_asm_include() {
     assert!(
         content.contains("tests/data/Add.s"),
         "Dependency file should contain tests/data/Add.s. Content: {}",
+        content
+    );
+    assert!(
+        content.contains("tests/data/OnlyRodata.s"),
+        "Dependency file should contain tests/data/OnlyRodata.s. Content: {}",
         content
     );
 
